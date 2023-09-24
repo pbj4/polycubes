@@ -16,7 +16,7 @@ use {
 };
 
 #[allow(dead_code)]
-pub fn solve(n: usize) -> BTreeMap<usize, usize> {
+pub fn solve_1(n: usize) -> BTreeMap<usize, usize> {
     let mut out = FxHashMap::default();
 
     let base = Cropped::default();
@@ -76,7 +76,7 @@ impl std::hash::BuildHasher for FxBuildHasher {
 const SHARD_AMOUNT: usize = 512;
 
 #[allow(dead_code)]
-pub fn solve6_2(n: usize) -> BTreeMap<usize, usize> {
+pub fn solve_2(n: usize) -> BTreeMap<usize, usize> {
     let out: DashMap<(N, Dimensions), DashMap<Transformed, bool, FxBuildHasher>, FxBuildHasher> =
         DashMap::with_hasher_and_shard_amount(FxBuildHasher {}, SHARD_AMOUNT);
 
@@ -131,7 +131,7 @@ fn recurse_parallel<'a>(
 }
 
 #[allow(dead_code, clippy::type_complexity)]
-pub fn solve6(n: usize) -> BTreeMap<usize, usize> {
+pub fn solve(n: usize) -> BTreeMap<usize, usize> {
     let out: DashMap<(N, Dimensions), DashMap<Box<[u8]>, bool, FxBuildHasher>, FxBuildHasher> =
         DashMap::with_hasher_and_shard_amount(FxBuildHasher {}, SHARD_AMOUNT);
 
@@ -882,7 +882,7 @@ fn neighbor_ixs(ix: Ix3) -> [Ix3; 6] {
 #[test]
 fn test_right_answer() {
     let now = std::time::Instant::now();
-    let result = solve6(10);
+    let result = solve(10);
     println!("total time: {:?}", now.elapsed());
 
     let real = BTreeMap::from([
