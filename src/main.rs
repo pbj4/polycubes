@@ -1,32 +1,24 @@
-use clap::Parser;
-
 mod revisions;
 
 fn main() {
-    let now = std::time::Instant::now();
+    let mut args = pico_args::Arguments::from_env();
+    let n: usize = args.free_from_str().expect("Error parsing number of cubes");
+    let num_threads = args
+        .opt_free_from_str()
+        .expect("Error parsing number of threads");
 
-    let args = Args::parse();
-
-    if let Some(num_threads) = args.threads {
+    if let Some(num_threads) = num_threads {
         rayon::ThreadPoolBuilder::new()
             .num_threads(num_threads)
             .build_global()
             .unwrap();
     }
 
-    let n = args.n;
+    let now = std::time::Instant::now();
 
     println!("enumerating up to n = {n}...");
 
     revisions::latest::solve(n);
 
     println!("total time: {:?}", now.elapsed());
-}
-
-#[derive(Parser)]
-struct Args {
-    /// target number of cubes to go up to
-    n: usize,
-    /// number of threads to use
-    threads: Option<usize>,
 }
