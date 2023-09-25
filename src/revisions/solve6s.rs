@@ -139,17 +139,6 @@ fn recurse_hashless_min_point<'a>(
     }
 }
 
-#[derive(Clone, Default)]
-struct FxBuildHasher;
-
-impl std::hash::BuildHasher for FxBuildHasher {
-    type Hasher = rustc_hash::FxHasher;
-
-    fn build_hasher(&self) -> Self::Hasher {
-        rustc_hash::FxHasher::default()
-    }
-}
-
 trait HasView<'a, 'b> {
     fn array_view(&'b self) -> ArrayView3<'a, bool>;
 

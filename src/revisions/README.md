@@ -2,6 +2,10 @@ This folder contains all the old versions of the code before I started using ver
 
 Each file is completely self contained and can be swapped in in main.rs by editing ```revisions::latest::solve(n)``` to ```revisions::solve6x::solve(n)```. The latest one is guaranteed to work, but others may be subtly broken or just incorrect.
 
+To reduce the number of dependencies pulled in by default, hash related dependencies are gated behind the ```hash``` feature. To enable them when running old versions:
+
+```cargo run -r --features hash -- 10```
+
 The "solve" part doesn't actually mean anything, it's just what I named the files for some reason.
 
 ## Milestones
