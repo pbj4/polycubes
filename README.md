@@ -2,7 +2,7 @@
 
 Based on the problem described in the [computerphile video](https://www.youtube.com/watch?v=g9n0a0644B4) and the discussions in the [associated repo](https://github.com/mikepound/opencubes).
 
-This program finds the number of unique polycubes under rotation in 3d and 4d (includes reflections). Primarily uses the [hashless](https://github.com/mikepound/opencubes/issues/11) algorithm by @presseyt and its [optimization](https://github.com/mikepound/opencubes/issues/49) by @snowmanam2, but the rest of the code was mostly written independently from the community implementation.
+This program finds the number of unique polycubes under rotation in 3d and 4d (includes reflections). Primarily uses the [hashless](https://github.com/mikepound/opencubes/issues/11) algorithm by presseyt and its [optimization](https://github.com/mikepound/opencubes/issues/49) by snowmanam2, but the rest of the code was mostly written independently from the community implementation.
 
 ## To run
 
@@ -11,7 +11,7 @@ Install the [rust](https://www.rust-lang.org/tools/install) toolchain
 To list all numbers of polycubes from 1 to 12 run:
 
 ```
-cargo run -r -- 12
+cargo run -r 12
 ```
 
 To limit the number of threads to 7 run:
@@ -20,15 +20,23 @@ To limit the number of threads to 7 run:
 cargo run -r 12 7
 ```
 
+## Performance
+
+Tested on a Ryzen 7 4600U
+
+| n | 11 | 12 | 13 | 14 | 15 | 16 |
+| --- | --- | --- | --- | --- | --- | --- |
+| time | 0.47s | 3.5s | 27s | 3m59s | 32m34s | 4h8m |
+
 ## Concepts used
 
 * Hashless algorithm for efficient traversal of the graph of polycubes without needing to maintain a duplicate set
 
 * snowmanam2's algorithm for a faster check for whether a DFS branch should terminate
 
-* A streaming [articulation point algorithm](https://people.cs.umass.edu/~mcgregor/papers/05-tcs.pdf) for a faster check for whether a cube is removable after adding another one (executes snowmanam2's algorithm faster)
+* A streaming [articulation point algorithm](https://people.cs.umass.edu/~mcgregor/papers/05-tcs.pdf) for a faster check for whether a cube is removable after adding another one (speeds up snowmanam2's algorithm)
 
-    * The max number of neighbors a cube in a polycube can have is 6, so I use heapless::Vec for the inner disjoint sets to avoid separate allocations
+    * The max number of neighbors a cube in a polycube can have is 6, so I use ```heapless::Vec``` for the inner disjoint sets to avoid separate allocations
 
     * The original graph before the addition of a cube always contains the same non articulation points unless a bridge is formed, so the update isn't always necessary
 
@@ -54,9 +62,9 @@ cargo run -r 12 7
 
         * The chirality of a transformation can be calculated as the xor of all reflections performed, including axis reflections and permutations that can't be rotated back to the identity
 
-* I represent polycubes with ```ndarray::Array3<bool>``` and ```ndarray::ArrayView3<bool>``` to transform and crop in constant time without allocations
+* ```ndarray::Array3<bool>``` and ```ndarray::ArrayView3<bool>``` to represent polycubes and transform and crop them in constant time without allocations
 
-* I use ```thread_local! { static RefCell<Collection>}``` to reuse allocations for each thread, which works as long as functions aren't reentrant
+* ```thread_local! { static RefCell<Collection> }``` to easily reuse allocations on each thread
 
 ## Possible improvements
 
