@@ -42,5 +42,6 @@ pub mod solve6v;
 pub mod solve6w;
 pub mod solve6x;
 pub mod solve6y;
+pub mod solve6z;
 
-pub use solve6y as latest;
+pub use solve6z as latest;

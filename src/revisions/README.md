@@ -8,6 +8,8 @@ To reduce the number of dependencies pulled in by default, hash related dependen
 
 The "solve" part doesn't actually mean anything, it's just what I named the files for some reason.
 
+The rest of development will happen in solve6z, which is the final version.
+
 ## Milestones
 
 * solve6: first working version, only counts 4d rotation polycubes
