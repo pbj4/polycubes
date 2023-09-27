@@ -10,6 +10,10 @@ The "solve" part doesn't actually mean anything, it's just what I named the file
 
 The rest of development will happen in solve6z, which is the final version.
 
+To get rid of recursion in the flamegraph run:
+
+```cargo flamegraph -F 100 --skip-after polycubes::revisions::solve6z::recurse_hashless_min_point -- 12```
+
 ## Milestones
 
 * solve6: first working version, only counts 4d rotation polycubes

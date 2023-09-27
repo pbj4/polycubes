@@ -10,10 +10,10 @@ use {
 
 #[allow(dead_code)]
 pub fn solve(n: usize) -> BTreeMap<usize, (usize, usize)> {
-    let (base, mirror_sym) = Transformed::from_cropped(&Cropped::default());
+    let base = Transformed::default();
     let counts = Counts::new(n);
 
-    rayon::scope(|s| recurse_hashless_min_point(&base, mirror_sym, &counts, n, s));
+    recurse_hashless_min_point(base, &counts, n);
 
     let counts = counts.into_map();
 
@@ -24,22 +24,16 @@ pub fn solve(n: usize) -> BTreeMap<usize, (usize, usize)> {
     counts
 }
 
-fn recurse_hashless_min_point<'a>(
-    transformed: &Transformed,
-    reflection_symmetry: bool,
-    counts: &'a Counts,
-    target_n: usize,
-    s: &rayon::Scope<'a>,
-) {
+fn recurse_hashless_min_point(transformed: Transformed, counts: &Counts, target_n: usize) {
     let current_n = transformed.n();
 
-    counts.insert(current_n, reflection_symmetry);
+    counts.insert(current_n, transformed.has_reflection_symmetry());
 
     if current_n.num() >= target_n {
         return;
     }
 
-    let padded = Padded::from_cropped(&Cropped::from_transformed(*transformed));
+    let padded = Padded::from_cropped(&Cropped::from_transformed(transformed));
 
     let mut streaming_aps = ApStreamingWrapper::from_view(padded.array_view(), padded.n());
     let streaming_aps_next_id = streaming_aps.add_node_unconnected();
@@ -54,64 +48,55 @@ fn recurse_hashless_min_point<'a>(
         ((t_add_ix.into_pattern(), t), (cropped.bb_used(), add_ix))
     }));
 
-    for ((t_add_ix, added_transformed), (bb_used, original_add_ix)) in unique_added {
-        let t_add_ix = usize3_to_ix(t_add_ix);
-        let added_transformed_view = added_transformed.array_view();
+    rayon::scope(|s| {
+        for ((t_add_ix, added_transformed), (bb_used, original_add_ix)) in unique_added {
+            let t_add_ix = usize3_to_ix(t_add_ix);
+            let added_transformed_view = added_transformed.array_view();
 
-        // check for bridge
-        let only_neighbor = {
-            let mut iter = neighbor_ixs(t_add_ix)
-                .into_iter()
-                .filter(|&ix| *added_transformed_view.get(ix).unwrap_or(&false));
+            // check for bridge
+            let only_neighbor = {
+                let mut iter = neighbor_ixs(t_add_ix)
+                    .into_iter()
+                    .filter(|&ix| *added_transformed_view.get(ix).unwrap_or(&false));
 
-            iter.next()
-                .xor(iter.next()) // extract one if there's only one neighbor
-                .filter(|_| added_transformed.n().num() > 2) // n <= 2 doesn't count
-        };
+                iter.next()
+                    .xor(iter.next()) // extract one if there's only one neighbor
+                    .filter(|_| added_transformed.n().num() > 2) // n <= 2 doesn't count
+            };
 
-        let mut possible_smaller = added_transformed_view
-            .indexed_iter()
-            .filter_map(|(ix, b)| if *b { Some(usize3_to_ix(ix)) } else { None })
-            .take_while(|ix| ix.into_pattern() < t_add_ix.into_pattern());
+            let mut possible_smaller = added_transformed_view
+                .indexed_iter()
+                .filter_map(|(ix, b)| if *b { Some(usize3_to_ix(ix)) } else { None })
+                .take_while(|ix| ix.into_pattern() < t_add_ix.into_pattern());
 
-        let transformed_streaming_aps =
-            streaming_aps.crop_transform_view(bb_used, added_transformed.transform_used());
+            let transformed_streaming_aps =
+                streaming_aps.crop_transform_view(bb_used, added_transformed.transform_used());
 
-        // fast path: check previous graph for non articulation points
-        let can_remove_1 = possible_smaller
-            .clone()
-            .any(|ix| transformed_streaming_aps.can_remove(ix) && Some(ix) != only_neighbor);
+            // fast path: check previous graph for non articulation points
+            let can_remove_1 = possible_smaller
+                .clone()
+                .any(|ix| transformed_streaming_aps.can_remove(ix) && Some(ix) != only_neighbor);
 
-        if can_remove_1 {
-            continue;
+            if can_remove_1 {
+                continue;
+            }
+
+            // slow path: update streaming graph
+            let can_remove_2 = {
+                let mut streaming_aps = streaming_aps.clone_borrow();
+                streaming_aps.connect_node(streaming_aps_next_id, *original_add_ix);
+                streaming_aps.replace_view(transformed_streaming_aps);
+
+                possible_smaller.any(|ix| streaming_aps.can_remove(ix))
+            };
+
+            if can_remove_2 {
+                continue;
+            }
+
+            s.spawn(move |_| recurse_hashless_min_point(added_transformed, counts, target_n))
         }
-
-        // slow path: update streaming graph
-        let can_remove_2 = {
-            let mut streaming_aps = streaming_aps.clone_borrow();
-            streaming_aps.connect_node(streaming_aps_next_id, *original_add_ix);
-            streaming_aps.replace_view(transformed_streaming_aps);
-
-            possible_smaller.any(|ix| streaming_aps.can_remove(ix))
-        };
-
-        if can_remove_2 {
-            continue;
-        }
-
-        let transformed_owned = added_transformed.to_owned();
-        s.spawn(move |s| {
-            let transformed = Transformed::from_owned(&transformed_owned);
-
-            recurse_hashless_min_point(
-                &transformed,
-                transformed.has_reflection_symmetry(),
-                counts,
-                target_n,
-                s,
-            );
-        })
-    }
+    });
 }
 
 // faster for smaller sizes
@@ -528,102 +513,14 @@ mod transformed {
         transform: Transformation,
     }
 
-    pub struct TransformedOwned {
-        n: N,
-        com: CenterOfMass,
-        array: Array3<bool>,
-        transform: Transformation,
-    }
-
     // does inversion first, then permutation
-    #[derive(Clone, Copy, Debug)]
+    #[derive(Clone, Copy, Debug, Default)]
     pub struct Transformation {
         comb: Combination,
         perm: Permutation,
     }
 
     impl<'a> Transformed<'a> {
-        pub fn from_cropped(cropped: &Cropped<'a>) -> (Self, bool) {
-            let mut lowest: Option<Self> = None;
-            let mut first: Option<(Self, bool)> = None;
-            let mut has_reflection_symmetry = false;
-
-            let n = cropped.n();
-
-            thread_local! {
-                static ALLOC: RefCell<(Vec<Combination>, Vec<Permutation>)> = RefCell::default();
-            }
-
-            ALLOC.with(|rc| {
-                let (valid_combs, valid_perms) = &mut *rc.borrow_mut();
-
-                Combination::populate_vec_all_valid_octant(
-                    cropped.com(),
-                    cropped.com_cc(),
-                    valid_combs,
-                );
-                let valid_octal_com = cropped.com().invert(valid_combs[0], cropped.com_cc());
-
-                Permutation::populate_vec_all_valid(valid_octal_com, cropped.dim(), valid_perms);
-                let valid_com = valid_octal_com.permute(valid_perms[0]);
-
-                // fast path
-                if let ([comb], [perm]) = (valid_combs.as_slice(), valid_perms.as_slice()) {
-                    let transform = Transformation {
-                        comb: *comb,
-                        perm: *perm,
-                    };
-
-                    return (
-                        Self {
-                            view: transform.transform_view(cropped.array_view()),
-                            com: valid_com,
-                            n,
-                            transform,
-                        },
-                        false,
-                    );
-                }
-
-                for comb in valid_combs.iter().copied() {
-                    for perm in valid_perms.iter().copied() {
-                        let transform = Transformation { comb, perm };
-
-                        let new = Self {
-                            view: transform.transform_view(cropped.array_view()),
-                            com: valid_com,
-                            n,
-                            transform,
-                        };
-
-                        let chirality = is_reflection(transform);
-
-                        if let Some((first_cube, first_chirality)) = &first {
-                            if !has_reflection_symmetry
-                                && &chirality != first_chirality
-                                && &new == first_cube
-                            {
-                                has_reflection_symmetry = true;
-                            }
-                        } else {
-                            first = Some((new, chirality));
-                        }
-
-                        if let Some(prev_lowest) = lowest {
-                            lowest = Some(prev_lowest.min(new));
-                        } else {
-                            lowest = Some(new);
-                        }
-                    }
-                }
-
-                let new = lowest.unwrap();
-                new.verify_com();
-                new.verify_n();
-                (new, has_reflection_symmetry)
-            })
-        }
-
         pub fn from_cropped_min_point(cropped: &Cropped<'a>, ix: Ix3) -> (Self, Ix3) {
             let mut lowest: Option<((OrdView, [usize; 3]), Transformation)> = None;
 
@@ -741,24 +638,6 @@ mod transformed {
         pub fn transform_used(&self) -> Transformation {
             self.transform
         }
-
-        pub fn to_owned(self) -> TransformedOwned {
-            TransformedOwned {
-                n: self.n,
-                com: self.com,
-                array: self.view.to_owned(),
-                transform: self.transform,
-            }
-        }
-
-        pub fn from_owned(owned: &'a TransformedOwned) -> Self {
-            Self {
-                n: owned.n,
-                com: owned.com,
-                view: owned.array.view(),
-                transform: owned.transform,
-            }
-        }
     }
 
     #[derive(PartialEq, Eq, Clone, Copy, Debug, Hash)]
@@ -814,6 +693,18 @@ mod transformed {
     }
 
     impl<'a> Eq for Transformed<'a> {}
+
+    impl<'a> Default for Transformed<'a> {
+        fn default() -> Self {
+            let cropped = Cropped::default();
+            Self {
+                com: cropped.com(),
+                view: cropped.array_view(),
+                n: cropped.n(),
+                transform: Transformation::default(),
+            }
+        }
+    }
 
     impl<'a, 'b> HasView<'a, 'b> for Transformed<'a> {
         fn array_view(&self) -> ArrayView3<'a, bool> {
@@ -1032,13 +923,19 @@ mod perm {
             view.permuted_axes(self.0)
         }
     }
+
+    impl Default for Permutation {
+        fn default() -> Self {
+            Self([0, 1, 2])
+        }
+    }
 }
 
 mod comb {
     use super::*;
 
     // true represents inversion
-    #[derive(Clone, Copy, PartialEq, Debug)]
+    #[derive(Clone, Copy, PartialEq, Debug, Default)]
     pub struct Combination([bool; 3]);
 
     impl Combination {
