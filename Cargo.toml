@@ -20,4 +20,4 @@ debug = 2
 opt-level = 3
 
 [features]
-hash = ["dep:dashmap", "dep:rustc-hash"]
+hash = ["dashmap", "rustc-hash"]

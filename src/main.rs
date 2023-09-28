@@ -1,5 +1,3 @@
-mod revisions;
-
 fn main() {
     let mut args = pico_args::Arguments::from_env();
     let n: usize = args.free_from_str().expect("Error parsing number of cubes");
@@ -18,7 +16,7 @@ fn main() {
 
     println!("enumerating up to n = {n}...");
 
-    revisions::latest::solve(n);
+    polycubes::revisions::latest::solve(n);
 
     println!("total time: {:?}", now.elapsed());
 }
