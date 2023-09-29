@@ -21,6 +21,7 @@ opt-level = 3
 
 [features]
 hash = ["dashmap", "rustc-hash"]
+output = []
 
 [dev-dependencies]
 rand = "0.8.5"

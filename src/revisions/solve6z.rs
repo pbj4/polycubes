@@ -13,7 +13,11 @@ pub fn solve(n: usize) -> BTreeMap<usize, (usize, usize)> {
     let base = Transformed::default();
     let counts = Counts::new(n);
 
-    recurse_hashless_min_point(base, &counts, n);
+    #[cfg(not(feature = "output"))]
+    recurse_hashless_min_point(base, n, &counts);
+
+    #[cfg(feature = "output")]
+    panic!("can't run standalone solve with output feature enabled");
 
     let counts = counts.into_map();
 
@@ -24,12 +28,20 @@ pub fn solve(n: usize) -> BTreeMap<usize, (usize, usize)> {
     counts
 }
 
-fn recurse_hashless_min_point(transformed: Transformed, counts: &Counts, target_n: usize) {
+fn recurse_hashless_min_point(
+    transformed: Transformed,
+    target_n: usize,
+    #[cfg(not(feature = "output"))] counts: &Counts,
+    #[cfg(feature = "output")] out: &(impl Fn(ArrayView3<bool>) + Send + Sync),
+) {
     let current_n = transformed.n();
 
+    #[cfg(not(feature = "output"))]
     counts.insert(current_n, transformed.has_reflection_symmetry());
 
-    if current_n.num() >= target_n {
+    if current_n.num() == target_n {
+        #[cfg(feature = "output")]
+        out(transformed.array_view());
         return;
     }
 
@@ -94,7 +106,13 @@ fn recurse_hashless_min_point(transformed: Transformed, counts: &Counts, target_
                 continue;
             }
 
-            s.spawn(move |_| recurse_hashless_min_point(added_transformed, counts, target_n))
+            s.spawn(move |_| {
+                #[cfg(not(feature = "output"))]
+                recurse_hashless_min_point(added_transformed, target_n, counts);
+
+                #[cfg(feature = "output")]
+                recurse_hashless_min_point(added_transformed, target_n, out);
+            })
         }
     });
 }
