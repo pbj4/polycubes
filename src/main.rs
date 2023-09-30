@@ -1,4 +1,13 @@
 fn main() {
+    #[cfg(feature = "output")]
+    panic!("can't run default binary with output feature enabled");
+
+    #[cfg(not(feature = "output"))]
+    main_inner();
+}
+
+#[cfg(not(feature = "output"))]
+fn main_inner() {
     let mut args = pico_args::Arguments::from_env();
     let n: usize = args.free_from_str().expect("Error parsing number of cubes");
     let num_threads = args

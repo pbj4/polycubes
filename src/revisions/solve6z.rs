@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use {
     ndarray::{Array3, ArrayView3, ArrayViewMut3, Axis, Dimension, Ix3},
     std::{cell::RefCell, cmp::Ordering, collections::BTreeMap},
@@ -8,16 +10,12 @@ use {
     padded::*, perm::*, transformed::*,
 };
 
-#[allow(dead_code)]
+#[cfg(not(feature = "output"))]
 pub fn solve(n: usize) -> BTreeMap<usize, (usize, usize)> {
     let base = Transformed::default();
     let counts = Counts::new(n);
 
-    #[cfg(not(feature = "output"))]
     recurse_hashless_min_point(base, n, &counts);
-
-    #[cfg(feature = "output")]
-    panic!("can't run standalone solve with output feature enabled");
 
     let counts = counts.into_map();
 
@@ -26,6 +24,12 @@ pub fn solve(n: usize) -> BTreeMap<usize, (usize, usize)> {
     }
 
     counts
+}
+
+#[cfg(feature = "output")]
+pub fn solve_out(n: usize, out: &(impl Fn(ArrayView3<bool>) + Send + Sync)) {
+    let base = Transformed::default();
+    recurse_hashless_min_point(base, n, &out);
 }
 
 fn recurse_hashless_min_point(
@@ -1404,6 +1408,7 @@ fn ix_cmp_elementwise(a: Ix3, b: Ix3) -> [Ordering; 3] {
 }
 
 #[test]
+#[cfg(not(feature = "output"))]
 fn test_small_n() {
     let now = std::time::Instant::now();
     let result = solve(10);
