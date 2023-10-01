@@ -17,6 +17,8 @@ pub fn solve(n: usize) -> BTreeMap<usize, (usize, usize)> {
 
     recurse_hashless_min_point(base, n, &counts);
 
+    println!("results:");
+
     let counts = counts.into_map();
 
     for (k, (r, p)) in counts.iter() {
@@ -30,6 +32,16 @@ pub fn solve(n: usize) -> BTreeMap<usize, (usize, usize)> {
 pub fn solve_out(n: usize, out: &(impl Fn(ArrayView3<bool>) + Send + Sync)) {
     let base = Transformed::default();
     recurse_hashless_min_point(base, n, &out);
+}
+
+#[cfg(not(feature = "output"))]
+pub fn solve_partial(n: usize, base: ArrayView3<bool>) -> BTreeMap<usize, (usize, usize)> {
+    let base = Transformed::from_view_unchecked(base);
+    let counts = Counts::new(n);
+
+    recurse_hashless_min_point(base, n, &counts);
+
+    counts.into_map()
 }
 
 fn recurse_hashless_min_point(
@@ -659,6 +671,15 @@ mod transformed {
 
         pub fn transform_used(&self) -> Transformation {
             self.transform
+        }
+
+        pub fn from_view_unchecked(view: ArrayView3<'a, bool>) -> Self {
+            Self {
+                com: CenterOfMass::from_view(view),
+                n: N::from_view(view),
+                view,
+                transform: Transformation::default(),
+            }
         }
     }
 

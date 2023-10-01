@@ -3,10 +3,6 @@ use {
     tiny_http::{Method, Response, Server},
 };
 
-const LISTEN_ADDR: &str = "0.0.0.0:1529"; // this is just a random port
-const INITIAL_N: usize = 10;
-const TARGET_N: usize = 14;
-
 fn main() {
     println!("opening database");
 
@@ -14,10 +10,32 @@ fn main() {
     let meta = db.open_tree("meta").unwrap();
 
     if !meta.contains_key(DB_FINISH_KEY).unwrap() {
-        if !meta.contains_key(DB_INIT_KEY).unwrap() {
-            println!("generating polycubes");
+        let mut args = pico_args::Arguments::from_env();
+        let listen_addr: String = args.free_from_str().expect("Error parsing listen address");
 
-            polycubes::revisions::latest::solve_out(INITIAL_N, &|view| {
+        let (initial_n, target_n): (usize, usize) = if let (Some(initial_n), Some(target_n)) = (
+            meta.get(DB_INITIAL_N_KEY).unwrap(),
+            meta.get(DB_TARGET_N_KEY).unwrap(),
+        ) {
+            print!("loading saved configuration: ");
+            let [initial_n]: [u8; 1] = initial_n.as_ref().try_into().unwrap();
+            let [target_n]: [u8; 1] = target_n.as_ref().try_into().unwrap();
+            (initial_n.into(), target_n.into())
+        } else {
+            print!("loading configuration from cli: ");
+            let initial_n: u8 = args.free_from_str().expect("Error parsing initial_n");
+            let target_n: u8 = args.free_from_str().expect("Error parsing target_n");
+            meta.insert(DB_INITIAL_N_KEY, &[initial_n]).unwrap();
+            meta.insert(DB_TARGET_N_KEY, &[target_n]).unwrap();
+            (initial_n.into(), target_n.into())
+        };
+
+        println!("initial_n = {initial_n}, target_n = {target_n}");
+
+        if !meta.contains_key(DB_INIT_KEY).unwrap() {
+            println!("generating initial polycubes");
+
+            polycubes::revisions::latest::solve_out(initial_n, &|view| {
                 db.insert(serialization::polycube::serialize(view), &[])
                     .unwrap();
             });
@@ -26,9 +44,9 @@ fn main() {
             meta.insert(DB_INIT_KEY, &[]).unwrap();
         }
 
-        println!("listening on http://{LISTEN_ADDR}/ for job requests...");
+        let http = Server::http(&listen_addr).unwrap();
 
-        let http = Server::http(LISTEN_ADDR).unwrap();
+        println!("listening on http://{listen_addr}/ for job requests...");
 
         let job_iter_producer = || {
             db.iter()
@@ -45,6 +63,19 @@ fn main() {
             }
         };
 
+        let total_jobs = db.iter().count();
+        let mut jobs_done = db
+            .iter()
+            .map(Result::unwrap)
+            .filter(|(_, v)| !v.is_empty())
+            .count();
+        let print_job_progress = |jobs_done| {
+            use std::io::Write;
+            print!("\rjobs processed: {jobs_done}/{total_jobs}");
+            std::io::stdout().lock().flush().unwrap();
+        };
+        print_job_progress(jobs_done);
+
         while let Ok(mut request) = http.recv() {
             match (request.url(), request.method()) {
                 ("/work", Method::Get) => {
@@ -53,7 +84,7 @@ fn main() {
                             .respond(Response::new(
                                 200.into(),
                                 vec![],
-                                serialization::job::serialize(polycube.as_ref(), TARGET_N)
+                                serialization::job::serialize(polycube.as_ref(), target_n)
                                     .as_slice(),
                                 None,
                                 None,
@@ -69,18 +100,17 @@ fn main() {
                     request.as_reader().read_to_end(&mut result).unwrap();
 
                     let (polycube, counts) = serialization::result::as_key_value(&result);
+                    let old = db.insert(polycube, counts).unwrap().unwrap();
 
-                    let status_code = if let Some(old) = db.insert(polycube, counts).unwrap() {
-                        if counts == old.as_ref() {
-                            200
-                        } else {
-                            eprintln!(
-                                "conflicting result:\n{old:?}\nvs\n{counts:?}\nfor\n{polycube:?}"
-                            );
-                            400
-                        }
-                    } else {
+                    if old.is_empty() {
+                        jobs_done += 1;
+                        print_job_progress(jobs_done);
+                    }
+
+                    let status_code = if old.is_empty() || counts == old.as_ref() {
                         200
+                    } else {
+                        400
                     };
 
                     request.respond(Response::empty(status_code)).unwrap();
@@ -92,7 +122,7 @@ fn main() {
         let counts = db
             .iter()
             .map(Result::unwrap)
-            .fold(vec![(0, 0); TARGET_N], |mut a, (_, c)| {
+            .fold(vec![(0, 0); target_n], |mut a, (_, c)| {
                 let c = serialization::result::deserialize_counts(c.as_ref());
                 assert_eq!(a.len(), c.len());
 
@@ -110,6 +140,22 @@ fn main() {
         )
         .unwrap();
         meta.flush().unwrap();
+
+        // keep telling clients work is finished, will run until process exits
+        std::thread::spawn(move || {
+            while let Ok(request) = http.recv() {
+                let status_code = if let ("/work", Method::Get) = (request.url(), request.method())
+                {
+                    204
+                } else {
+                    404
+                };
+
+                request.respond(Response::empty(status_code)).unwrap();
+            }
+        });
+
+        println!();
     }
 
     println!("results:");
@@ -118,11 +164,23 @@ fn main() {
         meta.get(DB_FINISH_KEY).unwrap().unwrap().as_ref(),
     );
 
+    let [initial_n]: [u8; 1] = meta
+        .get(DB_INITIAL_N_KEY)
+        .unwrap()
+        .unwrap()
+        .as_ref()
+        .try_into()
+        .unwrap();
+
     for (i, (r, p)) in counts.iter().enumerate() {
         let i = i + 1;
-        println!("n: {:?}, r: {:?}, p: {:?}", i, r, p);
+        if i >= initial_n.into() {
+            println!("n: {:?}, r: {:?}, p: {:?}", i, r, p);
+        }
     }
 }
 
 const DB_INIT_KEY: &str = "db_init";
 const DB_FINISH_KEY: &str = "db_finish";
+const DB_INITIAL_N_KEY: &str = "db_initial_n";
+const DB_TARGET_N_KEY: &str = "db_target_n";
