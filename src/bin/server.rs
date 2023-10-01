@@ -1,5 +1,6 @@
 use {
     polycubes::serialization,
+    std::io::{BufRead, Write},
     tiny_http::{Method, Response, Server},
 };
 
@@ -44,6 +45,8 @@ fn main() {
             meta.insert(DB_INIT_KEY, &[]).unwrap();
         }
 
+        let now = std::time::Instant::now();
+
         let http = Server::http(&listen_addr).unwrap();
 
         println!("listening on http://{listen_addr}/ for job requests...");
@@ -70,7 +73,6 @@ fn main() {
             .filter(|(_, v)| !v.is_empty())
             .count();
         let print_job_progress = |jobs_done| {
-            use std::io::Write;
             print!("\rjobs processed: {jobs_done}/{total_jobs}");
             std::io::stdout().lock().flush().unwrap();
         };
@@ -147,6 +149,8 @@ fn main() {
                 let status_code = if let ("/work", Method::Get) = (request.url(), request.method())
                 {
                     204
+                } else if let ("/result", Method::Post) = (request.url(), request.method()) {
+                    200
                 } else {
                     404
                 };
@@ -156,6 +160,7 @@ fn main() {
         });
 
         println!();
+        println!("finish time: {:?}", now.elapsed())
     }
 
     println!("results:");
@@ -178,6 +183,13 @@ fn main() {
             println!("n: {:?}, r: {:?}, p: {:?}", i, r, p);
         }
     }
+
+    print!("press enter to exit...");
+    std::io::stdout().lock().flush().unwrap();
+    std::io::stdin()
+        .lock()
+        .read_line(&mut String::new())
+        .unwrap();
 }
 
 const DB_INIT_KEY: &str = "db_init";
