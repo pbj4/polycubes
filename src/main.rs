@@ -25,7 +25,18 @@ fn main_inner() {
 
     println!("enumerating up to n = {n}...");
 
-    polycubes::revisions::latest::solve(n);
+    let map = polycubes::revisions::latest::solve(n);
 
-    println!("total time: {:?}", now.elapsed());
+    let time = now.elapsed();
+
+    println!("total time: {:?}", time);
+
+    let r: usize = map.values().map(|(r, _)| r).sum();
+    let p: usize = map.values().map(|(_, p)| p).sum();
+
+    println!(
+        "performance: {} r/s, {} p/s",
+        (r as f64 / time.as_secs_f64()) as usize,
+        (p as f64 / time.as_secs_f64()) as usize,
+    );
 }
