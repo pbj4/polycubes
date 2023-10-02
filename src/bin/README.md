@@ -17,3 +17,7 @@ The server currently does **NOT** validate anything, so don't expose it to any u
 To run a client with a server running on localhost at port 1529:
 
 ```cargo run -r --bin client --features client -- http://127.0.0.1:1529/```
+
+To limit the number of threads to 7:
+
+```cargo run -r --bin client --features client -- http://127.0.0.1:1529/ 7```
