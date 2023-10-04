@@ -1,7 +1,5 @@
 use std::io::Write;
 
-const RETRY_LIMIT: usize = 120;
-
 fn main() {
     let mut args = pico_args::Arguments::from_env();
     let url: String = args.free_from_str().expect("Error parsing server url");
@@ -23,7 +21,7 @@ fn main() {
     let mut now = std::time::Instant::now();
     let mut jobs_done = 0;
 
-    let mut get_retries = 0;
+    let mut delay = std::time::Duration::from_secs(1);
     loop {
         match ureq::get(&work_url).call() {
             Ok(response) => {
@@ -51,27 +49,21 @@ fn main() {
 
                 now = std::time::Instant::now();
 
-                let mut post_retries = 0;
+                let mut delay = std::time::Duration::from_secs(1);
                 while let Err(err) = ureq::post(&result_url).send_bytes(&result) {
                     eprintln!("\nerror posting results: {err:?}");
-
-                    if post_retries < RETRY_LIMIT {
-                        std::thread::sleep(std::time::Duration::from_secs(1));
-                    } else {
-                        post_retries += 1;
-                    }
+                    eprintln!("retrying in {delay:?}");
+                    std::thread::sleep(delay);
+                    delay *= 2;
                 }
 
                 jobs_done += 1;
             }
             Err(err) => {
-                eprintln!("error getting work: {err:?}");
-
-                if get_retries < RETRY_LIMIT {
-                    std::thread::sleep(std::time::Duration::from_secs(1));
-                } else {
-                    get_retries += 1;
-                }
+                eprintln!("\nerror posting results: {err:?}");
+                eprintln!("retrying in {delay:?}");
+                std::thread::sleep(delay);
+                delay *= 2;
             }
         }
     }
