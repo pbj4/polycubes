@@ -14,21 +14,13 @@ fn main() {
         let mut args = pico_args::Arguments::from_env();
         let listen_addr: String = args.free_from_str().expect("Error parsing listen address");
 
-        let (initial_n, target_n): (usize, usize) = if let (Some(initial_n), Some(target_n)) = (
-            meta.get(DB_INITIAL_N_KEY).unwrap(),
-            meta.get(DB_TARGET_N_KEY).unwrap(),
-        ) {
-            print!("loading saved configuration: ");
-            let [initial_n]: [u8; 1] = initial_n.as_ref().try_into().unwrap();
-            let [target_n]: [u8; 1] = target_n.as_ref().try_into().unwrap();
-            (initial_n.into(), target_n.into())
+        print!("loading configuration from ");
+        let (initial_n, target_n) = if let Some(config) = get_config_db(&meta) {
+            print!("db: ");
+            config
         } else {
-            print!("loading configuration from cli: ");
-            let initial_n: u8 = args.free_from_str().expect("Error parsing initial_n");
-            let target_n: u8 = args.free_from_str().expect("Error parsing target_n");
-            meta.insert(DB_INITIAL_N_KEY, &[initial_n]).unwrap();
-            meta.insert(DB_TARGET_N_KEY, &[target_n]).unwrap();
-            (initial_n.into(), target_n.into())
+            print!("cli: ");
+            get_config_cli(&mut args, &meta)
         };
 
         println!("initial_n = {initial_n}, target_n = {target_n}");
@@ -51,37 +43,15 @@ fn main() {
 
         println!("listening on http://{listen_addr}/ for job requests...");
 
-        let job_iter_producer = || {
-            db.iter()
-                .map(Result::unwrap)
-                .filter_map(|(k, v)| v.is_empty().then_some(k))
-        };
-        let mut job_iter = job_iter_producer();
-        let mut get_job = || {
-            if let Some(job) = job_iter.next() {
-                Some(job)
-            } else {
-                job_iter = job_iter_producer();
-                job_iter.next()
-            }
-        };
-
-        let total_jobs = db.iter().count();
-        let mut jobs_done = db
-            .iter()
-            .map(Result::unwrap)
-            .filter(|(_, v)| !v.is_empty())
-            .count();
-        let print_job_progress = |jobs_done| {
-            print!("\rjobs processed: {jobs_done}/{total_jobs}");
-            std::io::stdout().lock().flush().unwrap();
-        };
-        print_job_progress(jobs_done);
+        let mut job_finder = JobFinder::new(&db);
+        let mut job_tracker = JobTracker::new(&db);
+        print!("\r{job_tracker}");
+        std::io::stdout().lock().flush().unwrap();
 
         while let Ok(mut request) = http.recv() {
             match (request.url(), request.method()) {
                 ("/work", Method::Get) => {
-                    if let Some(polycube) = get_job() {
+                    if let Some(polycube) = job_finder.next() {
                         request
                             .respond(Response::new(
                                 200.into(),
@@ -105,8 +75,9 @@ fn main() {
                     let old = db.insert(polycube, counts).unwrap().unwrap();
 
                     if old.is_empty() {
-                        jobs_done += 1;
-                        print_job_progress(jobs_done);
+                        job_tracker.increment();
+                        print!("\r{job_tracker}");
+                        std::io::stdout().lock().flush().unwrap();
                     }
 
                     let status_code = if old.is_empty() || counts == old.as_ref() {
@@ -117,7 +88,7 @@ fn main() {
 
                     request.respond(Response::empty(status_code)).unwrap();
                 }
-                _ => request.respond(Response::empty(404)).unwrap(),
+                _ => {}
             }
         }
 
@@ -146,16 +117,11 @@ fn main() {
         // keep telling clients work is finished, will run until process exits
         std::thread::spawn(move || {
             while let Ok(request) = http.recv() {
-                let status_code = if let ("/work", Method::Get) = (request.url(), request.method())
-                {
-                    204
-                } else if let ("/result", Method::Post) = (request.url(), request.method()) {
-                    200
-                } else {
-                    404
-                };
-
-                request.respond(Response::empty(status_code)).unwrap();
+                match (request.url(), request.method()) {
+                    ("/work", Method::Get) => request.respond(Response::empty(204)).unwrap(),
+                    ("/result", Method::Post) => request.respond(Response::empty(200)).unwrap(),
+                    _ => {}
+                }
             }
         });
 
@@ -169,17 +135,11 @@ fn main() {
         meta.get(DB_FINISH_KEY).unwrap().unwrap().as_ref(),
     );
 
-    let [initial_n]: [u8; 1] = meta
-        .get(DB_INITIAL_N_KEY)
-        .unwrap()
-        .unwrap()
-        .as_ref()
-        .try_into()
-        .unwrap();
+    let (initial_n, _) = get_config_db(&meta).unwrap();
 
     for (i, (r, p)) in counts.iter().enumerate() {
         let i = i + 1;
-        if i >= initial_n.into() {
+        if i >= initial_n {
             println!("n: {:?}, r: {:?}, p: {:?}", i, r, p);
         }
     }
@@ -196,3 +156,89 @@ const DB_INIT_KEY: &str = "db_init";
 const DB_FINISH_KEY: &str = "db_finish";
 const DB_INITIAL_N_KEY: &str = "db_initial_n";
 const DB_TARGET_N_KEY: &str = "db_target_n";
+
+struct JobFinder {
+    db: sled::Tree,
+    iter: Option<sled::Iter>,
+}
+
+impl JobFinder {
+    fn new(db: &sled::Tree) -> Self {
+        Self {
+            db: db.clone(),
+            iter: Some(db.iter()),
+        }
+    }
+
+    fn next_linear(&mut self) -> Option<sled::IVec> {
+        self.iter
+            .as_mut()?
+            .by_ref()
+            .map(Result::unwrap)
+            .find_map(|(k, v)| v.is_empty().then_some(k))
+    }
+}
+
+impl Iterator for JobFinder {
+    type Item = sled::IVec;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(item) = self.next_linear() {
+            Some(item)
+        } else if let Some(iter) = &mut self.iter {
+            *iter = self.db.iter();
+            self.next_linear()
+        } else {
+            None
+        }
+    }
+}
+
+struct JobTracker {
+    total: usize,
+    completed: usize,
+}
+
+impl JobTracker {
+    fn new(db: &sled::Tree) -> Self {
+        Self {
+            total: db.len(),
+            completed: db
+                .iter()
+                .map(Result::unwrap)
+                .filter(|(_, v)| !v.is_empty())
+                .count(),
+        }
+    }
+
+    fn increment(&mut self) {
+        self.completed += 1;
+    }
+}
+
+impl std::fmt::Display for JobTracker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "jobs processed: {}/{}", self.completed, self.total)
+    }
+}
+
+fn get_config_db(meta: &sled::Tree) -> Option<(usize, usize)> {
+    if let (Some(initial_n), Some(target_n)) = (
+        meta.get(DB_INITIAL_N_KEY).unwrap(),
+        meta.get(DB_TARGET_N_KEY).unwrap(),
+    ) {
+        let [initial_n]: [u8; 1] = initial_n.as_ref().try_into().unwrap();
+        let [target_n]: [u8; 1] = target_n.as_ref().try_into().unwrap();
+        Some((initial_n.into(), target_n.into()))
+    } else {
+        None
+    }
+}
+
+fn get_config_cli(args: &mut pico_args::Arguments, meta: &sled::Tree) -> (usize, usize) {
+    let initial_n: u8 = args.free_from_str().expect("Error parsing initial_n");
+    let target_n: u8 = args.free_from_str().expect("Error parsing target_n");
+    meta.insert(DB_INITIAL_N_KEY, &[initial_n]).unwrap();
+    meta.insert(DB_TARGET_N_KEY, &[target_n]).unwrap();
+    (initial_n.into(), target_n.into())
+}
