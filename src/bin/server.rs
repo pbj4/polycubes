@@ -1,4 +1,5 @@
 use {
+    nanoserde::{DeBin, SerBin},
     polycubes::serialization,
     std::io::{BufRead, Write},
     tiny_http::{Method, Response, Server},
@@ -29,7 +30,7 @@ fn main() {
             println!("generating initial polycubes");
 
             polycubes::revisions::latest::solve_out(initial_n, &|view| {
-                db.insert(serialization::polycube::serialize(view), &[])
+                db.insert(serialization::SerPolycube::ser(view).as_slice(), &[])
                     .unwrap();
             });
             db.flush().unwrap();
@@ -48,47 +49,59 @@ fn main() {
         print!("\r{job_tracker}");
         std::io::stdout().lock().flush().unwrap();
 
-        while let Ok(mut request) = http.recv() {
-            match (request.url(), request.method()) {
-                ("/work", Method::Get) => {
-                    if let Some(polycube) = job_finder.next() {
-                        request
-                            .respond(Response::new(
-                                200.into(),
-                                vec![],
-                                serialization::job::serialize(polycube.as_ref(), target_n)
-                                    .as_slice(),
-                                None,
-                                None,
-                            ))
-                            .unwrap();
-                    } else {
-                        request.respond(Response::empty(204)).unwrap();
-                        break;
-                    }
-                }
-                ("/result", Method::Post) => {
-                    let mut result = Vec::new();
-                    request.as_reader().read_to_end(&mut result).unwrap();
+        'handle: while let Ok(mut request) = http.recv() {
+            if let ("/work", Method::Post) = (request.url(), request.method()) {
+                // handle result
+                let mut job_request = Vec::new();
+                request.as_reader().read_to_end(&mut job_request).unwrap();
+                let job_request = serialization::JobRequest::deserialize_bin(&job_request).unwrap();
 
-                    let (polycube, counts) = serialization::result::as_key_value(&result);
-                    let old = db.insert(polycube, counts).unwrap().unwrap();
+                for (polycube, result) in job_request.results {
+                    let old = db
+                        .insert(polycube.as_slice(), result.as_slice())
+                        .unwrap()
+                        .unwrap();
 
                     if old.is_empty() {
                         job_tracker.increment();
                         print!("\r{job_tracker}");
                         std::io::stdout().lock().flush().unwrap();
+                    } else if old != result.as_slice() {
+                        eprintln!(
+                            "conflicting result from {:?} for {:?}, {:?} vs {:?}",
+                            request.remote_addr(),
+                            polycube.as_slice(),
+                            old,
+                            result.as_slice(),
+                        );
+                        request.respond(Response::empty(400)).unwrap();
+                        continue 'handle;
                     }
-
-                    let status_code = if old.is_empty() || counts == old.as_ref() {
-                        200
-                    } else {
-                        400
-                    };
-
-                    request.respond(Response::empty(status_code)).unwrap();
                 }
-                _ => {}
+
+                // assign job
+                let job_response = serialization::JobResponse {
+                    target_n,
+                    jobs: job_finder
+                        .by_ref()
+                        .take(job_request.jobs_wanted)
+                        .map(|iv| serialization::SerPolycube::from_slice(&iv))
+                        .collect(),
+                };
+
+                request
+                    .respond(Response::new(
+                        200.into(),
+                        vec![],
+                        job_response.serialize_bin().as_slice(),
+                        None,
+                        None,
+                    ))
+                    .unwrap();
+
+                if job_finder.none_left() {
+                    break 'handle;
+                }
             }
         }
 
@@ -96,7 +109,7 @@ fn main() {
             .iter()
             .map(Result::unwrap)
             .fold(vec![(0, 0); target_n], |mut a, (_, c)| {
-                let c = serialization::result::deserialize_counts(c.as_ref());
+                let c = serialization::SerResults::from_slice(&c).de().into_vec();
                 assert_eq!(a.len(), c.len());
 
                 for ((ar, ap), (cr, cp)) in a.iter_mut().zip(c) {
@@ -109,21 +122,12 @@ fn main() {
 
         meta.insert(
             DB_FINISH_KEY,
-            serialization::result::serialize_counts(counts.iter().cloned()),
+            serialization::Results::from_vec(counts)
+                .ser()
+                .serialize_bin(),
         )
         .unwrap();
         meta.flush().unwrap();
-
-        // keep telling clients work is finished, will run until process exits
-        std::thread::spawn(move || {
-            while let Ok(request) = http.recv() {
-                match (request.url(), request.method()) {
-                    ("/work", Method::Get) => request.respond(Response::empty(204)).unwrap(),
-                    ("/result", Method::Post) => request.respond(Response::empty(200)).unwrap(),
-                    _ => {}
-                }
-            }
-        });
 
         println!();
         println!("finish time: {:?}", now.elapsed())
@@ -131,9 +135,11 @@ fn main() {
 
     println!("results:");
 
-    let counts = serialization::result::deserialize_counts(
-        meta.get(DB_FINISH_KEY).unwrap().unwrap().as_ref(),
-    );
+    let counts =
+        serialization::SerResults::deserialize_bin(&meta.get(DB_FINISH_KEY).unwrap().unwrap())
+            .unwrap()
+            .de()
+            .into_vec();
 
     let (initial_n, _) = get_config_db(&meta).unwrap();
 
@@ -177,6 +183,10 @@ impl JobFinder {
             .map(Result::unwrap)
             .find_map(|(k, v)| v.is_empty().then_some(k))
     }
+
+    fn none_left(&self) -> bool {
+        self.iter.is_none()
+    }
 }
 
 impl Iterator for JobFinder {
@@ -187,7 +197,12 @@ impl Iterator for JobFinder {
             Some(item)
         } else if let Some(iter) = &mut self.iter {
             *iter = self.db.iter();
-            self.next_linear()
+            if let Some(item) = self.next_linear() {
+                Some(item)
+            } else {
+                self.iter = None;
+                None
+            }
         } else {
             None
         }

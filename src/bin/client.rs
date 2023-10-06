@@ -1,4 +1,4 @@
-use std::io::Write;
+use {polycubes::serialization, std::sync::mpsc};
 
 fn main() {
     let mut args = pico_args::Arguments::from_env();
@@ -7,9 +7,7 @@ fn main() {
         .opt_free_from_str()
         .expect("Error parsing number of threads");
 
-    let url = url.strip_suffix('/').unwrap_or(&url);
-    let work_url = url.to_owned() + "/work";
-    let result_url = url.to_owned() + "/result";
+    let url = url.strip_suffix('/').unwrap_or(&url).to_owned() + "/work";
 
     if let Some(num_threads) = num_threads {
         rayon::ThreadPoolBuilder::new()
@@ -18,53 +16,66 @@ fn main() {
             .unwrap();
     }
 
-    let mut now = std::time::Instant::now();
-    let mut jobs_done = 0;
+    let (result_tx, work_rx) = connect_network(url, 10);
 
-    let mut delay = std::time::Duration::from_secs(1);
-    loop {
-        match ureq::get(&work_url).call() {
-            Ok(response) => {
-                if response.status() == 204 {
-                    println!("\nwork finished");
-                    break;
+    while let Ok(work) = work_rx.recv() {
+        for polycube in work.jobs {
+            let map =
+                polycubes::revisions::latest::solve_partial(work.target_n, polycube.de().view());
+
+            let result = serialization::Results::from_map(&map);
+
+            if let Err(_) = result_tx.send((polycube, result.ser())) {
+                break;
+            }
+        }
+    }
+
+    println!("work finished")
+}
+
+fn connect_network(
+    url: String,
+    jobs_wanted: usize,
+) -> (
+    mpsc::Sender<(serialization::SerPolycube, serialization::SerResults)>,
+    mpsc::Receiver<serialization::JobResponse>,
+) {
+    let (result_tx, result_rx) = mpsc::channel();
+    let (work_tx, work_rx) = mpsc::sync_channel(3);
+
+    std::thread::spawn(move || loop {
+        use nanoserde::{DeBin, SerBin};
+        let job_request = serialization::JobRequest {
+            jobs_wanted,
+            results: result_rx.try_iter().collect(),
+        }
+        .serialize_bin();
+
+        let mut delay = std::time::Duration::from_secs(1);
+        let job_response = loop {
+            match ureq::post(&url).send_bytes(&job_request) {
+                Ok(response) => {
+                    let mut buf = Vec::new();
+                    response.into_reader().read_to_end(&mut buf).unwrap();
+                    let response = serialization::JobResponse::deserialize_bin(&buf).unwrap();
+                    break response;
                 }
-
-                print!(
-                    "\rjobs completed: {}, server latency: {:?}        ",
-                    jobs_done,
-                    now.elapsed(),
-                );
-                std::io::stdout().lock().flush().unwrap();
-
-                let mut job = Vec::new();
-                response.into_reader().read_to_end(&mut job).unwrap();
-
-                let (n, polycube) = polycubes::serialization::job::deserialize(&job);
-                let polycube = polycubes::serialization::polycube::deserialize(polycube);
-
-                let map = polycubes::revisions::latest::solve_partial(n, polycube.view());
-
-                let result = polycubes::serialization::result::serialize(polycube.view(), &map);
-
-                now = std::time::Instant::now();
-
-                let mut delay = std::time::Duration::from_secs(1);
-                while let Err(err) = ureq::post(&result_url).send_bytes(&result) {
+                Err(err) => {
                     eprintln!("\nerror posting results: {err:?}");
                     eprintln!("retrying in {delay:?}");
                     std::thread::sleep(delay);
                     delay *= 2;
                 }
+            }
+        };
 
-                jobs_done += 1;
-            }
-            Err(err) => {
-                eprintln!("\nerror posting results: {err:?}");
-                eprintln!("retrying in {delay:?}");
-                std::thread::sleep(delay);
-                delay *= 2;
-            }
+        if job_response.jobs.is_empty() {
+            break;
+        } else {
+            work_tx.send(job_response).unwrap();
         }
-    }
+    });
+
+    (result_tx, work_rx)
 }
