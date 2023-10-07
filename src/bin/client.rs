@@ -16,7 +16,7 @@ fn main() {
             .unwrap();
     }
 
-    let (result_tx, work_rx) = connect_server(url);
+    let (result_tx, work_rx) = spawn_server_connection(url);
 
     while let Ok(work) = work_rx.recv() {
         for polycube in work.jobs {
@@ -32,7 +32,7 @@ fn main() {
     }
 }
 
-fn connect_server(
+fn spawn_server_connection(
     url: String,
 ) -> (
     mpsc::Sender<(serialization::SerPolycube, serialization::SerResults)>,

@@ -44,66 +44,15 @@ fn main() {
 
         println!("listening on http://{listen_addr}/ for job requests...");
 
-        let mut job_finder = JobFinder::new(&db);
-        let mut job_tracker = JobTracker::new(&db);
+        let job_finder = JobFinder::new(&db);
+        let job_tracker = JobTracker::new(&db);
         print!("\r{job_tracker}");
         std::io::stdout().lock().flush().unwrap();
 
-        'handle: while let Ok(mut request) = http.recv() {
-            if let ("/work", Method::Post) = (request.url(), request.method()) {
-                // handle result
-                let mut job_request = Vec::new();
-                request.as_reader().read_to_end(&mut job_request).unwrap();
-                let job_request = serialization::JobRequest::deserialize_bin(&job_request).unwrap();
+        let finish = spawn_job_server(http, (*db).clone(), target_n, job_finder, job_tracker);
 
-                for (polycube, result) in job_request.results {
-                    let old = db
-                        .insert(polycube.as_slice(), result.as_slice())
-                        .unwrap()
-                        .unwrap();
-
-                    if old.is_empty() {
-                        job_tracker.increment();
-                        print!("\r{job_tracker}");
-                        std::io::stdout().lock().flush().unwrap();
-                    } else if old != result.as_slice() {
-                        eprintln!(
-                            "conflicting result from {:?} for {:?}, {:?} vs {:?}",
-                            request.remote_addr(),
-                            polycube.as_slice(),
-                            old,
-                            result.as_slice(),
-                        );
-                        request.respond(Response::empty(400)).unwrap();
-                        continue 'handle;
-                    }
-                }
-
-                // assign job
-                let job_response = serialization::JobResponse {
-                    target_n,
-                    jobs: job_finder
-                        .assign(job_request.jobs_wanted)
-                        .into_iter()
-                        .map(|iv| serialization::SerPolycube::from_slice(&iv))
-                        .collect(),
-                };
-
-                request
-                    .respond(Response::new(
-                        200.into(),
-                        vec![],
-                        job_response.serialize_bin().as_slice(),
-                        None,
-                        None,
-                    ))
-                    .unwrap();
-
-                if job_finder.finished() || job_tracker.finished() {
-                    break 'handle;
-                }
-            }
-        }
+        let mutex = std::sync::Mutex::<()>::default();
+        let _guard = finish.wait(mutex.lock().unwrap()).unwrap();
 
         let counts = db
             .iter()
@@ -266,4 +215,78 @@ fn get_config_cli(args: &mut pico_args::Arguments, meta: &sled::Tree) -> (usize,
     meta.insert(DB_INITIAL_N_KEY, &[initial_n]).unwrap();
     meta.insert(DB_TARGET_N_KEY, &[target_n]).unwrap();
     (initial_n.into(), target_n.into())
+}
+
+fn spawn_job_server(
+    http: Server,
+    db: sled::Tree,
+    target_n: usize,
+    mut job_finder: JobFinder,
+    mut job_tracker: JobTracker,
+) -> std::sync::Arc<std::sync::Condvar> {
+    let finish = std::sync::Arc::new(std::sync::Condvar::new());
+
+    {
+        let finish = finish.clone();
+        std::thread::spawn(move || {
+            'handle: while let Ok(mut request) = http.recv() {
+                if let ("/work", Method::Post) = (request.url(), request.method()) {
+                    // handle result
+                    let mut job_request = Vec::new();
+                    request.as_reader().read_to_end(&mut job_request).unwrap();
+                    let job_request =
+                        serialization::JobRequest::deserialize_bin(&job_request).unwrap();
+
+                    for (polycube, result) in job_request.results {
+                        let old = db
+                            .insert(polycube.as_slice(), result.as_slice())
+                            .unwrap()
+                            .unwrap();
+
+                        if old.is_empty() {
+                            job_tracker.increment();
+                            print!("\r{job_tracker}");
+                            std::io::stdout().lock().flush().unwrap();
+                        } else if old != result.as_slice() {
+                            eprintln!(
+                                "conflicting result from {:?} for {:?}, {:?} vs {:?}",
+                                request.remote_addr(),
+                                polycube.as_slice(),
+                                old,
+                                result.as_slice(),
+                            );
+                            request.respond(Response::empty(400)).unwrap();
+                            continue 'handle;
+                        }
+                    }
+
+                    // assign job
+                    let job_response = serialization::JobResponse {
+                        target_n,
+                        jobs: job_finder
+                            .assign(job_request.jobs_wanted)
+                            .into_iter()
+                            .map(|iv| serialization::SerPolycube::from_slice(&iv))
+                            .collect(),
+                    };
+
+                    request
+                        .respond(Response::new(
+                            200.into(),
+                            vec![],
+                            job_response.serialize_bin().as_slice(),
+                            None,
+                            None,
+                        ))
+                        .unwrap();
+
+                    if job_finder.finished() || job_tracker.finished() {
+                        finish.notify_all();
+                    }
+                }
+            }
+        });
+    }
+
+    finish
 }
