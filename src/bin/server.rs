@@ -83,8 +83,8 @@ fn main() {
                 let job_response = serialization::JobResponse {
                     target_n,
                     jobs: job_finder
-                        .by_ref()
-                        .take(job_request.jobs_wanted)
+                        .assign(job_request.jobs_wanted)
+                        .into_iter()
                         .map(|iv| serialization::SerPolycube::from_slice(&iv))
                         .collect(),
                 };
@@ -99,7 +99,7 @@ fn main() {
                     ))
                     .unwrap();
 
-                if job_finder.none_left() {
+                if job_finder.finished() || job_tracker.finished() {
                     break 'handle;
                 }
             }
@@ -176,35 +176,41 @@ impl JobFinder {
         }
     }
 
-    fn next_linear(&mut self) -> Option<sled::IVec> {
-        self.iter
-            .as_mut()?
-            .by_ref()
-            .map(Result::unwrap)
-            .find_map(|(k, v)| v.is_empty().then_some(k))
-    }
-
-    fn none_left(&self) -> bool {
+    fn finished(&self) -> bool {
         self.iter.is_none()
     }
-}
 
-impl Iterator for JobFinder {
-    type Item = sled::IVec;
+    fn assign(&mut self, max: usize) -> Vec<sled::IVec> {
+        let max = max.max(1);
 
-    fn next(&mut self) -> Option<Self::Item> {
-        if let Some(item) = self.next_linear() {
-            Some(item)
-        } else if let Some(iter) = &mut self.iter {
-            *iter = self.db.iter();
-            if let Some(item) = self.next_linear() {
-                Some(item)
+        if let Some(iter) = &mut self.iter {
+            let vec: Vec<sled::IVec> = iter
+                .by_ref()
+                .map(Result::unwrap)
+                .filter_map(|(k, v)| v.is_empty().then_some(k))
+                .take(max)
+                .collect();
+
+            if vec.is_empty() {
+                *iter = self.db.iter();
+
+                let vec: Vec<sled::IVec> = iter
+                    .by_ref()
+                    .map(Result::unwrap)
+                    .filter_map(|(k, v)| v.is_empty().then_some(k))
+                    .take(max)
+                    .collect();
+
+                if vec.is_empty() {
+                    self.iter = None;
+                }
+
+                vec
             } else {
-                self.iter = None;
-                None
+                vec
             }
         } else {
-            None
+            vec![]
         }
     }
 }
@@ -228,6 +234,10 @@ impl JobTracker {
 
     fn increment(&mut self) {
         self.completed += 1;
+    }
+
+    fn finished(&self) -> bool {
+        self.total == self.completed
     }
 }
 

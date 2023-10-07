@@ -16,7 +16,7 @@ fn main() {
             .unwrap();
     }
 
-    let (result_tx, work_rx) = connect_network(url, 10);
+    let (result_tx, work_rx) = connect_server(url);
 
     while let Ok(work) = work_rx.recv() {
         for polycube in work.jobs {
@@ -25,56 +25,85 @@ fn main() {
 
             let result = serialization::Results::from_map(&map);
 
-            if let Err(_) = result_tx.send((polycube, result.ser())) {
+            if result_tx.send((polycube, result.ser())).is_err() {
                 break;
             }
         }
     }
-
-    println!("work finished")
 }
 
-fn connect_network(
+fn connect_server(
     url: String,
-    jobs_wanted: usize,
 ) -> (
     mpsc::Sender<(serialization::SerPolycube, serialization::SerResults)>,
     mpsc::Receiver<serialization::JobResponse>,
 ) {
     let (result_tx, result_rx) = mpsc::channel();
-    let (work_tx, work_rx) = mpsc::sync_channel(3);
+    let (work_tx, work_rx) = mpsc::sync_channel(2);
 
-    std::thread::spawn(move || loop {
-        use nanoserde::{DeBin, SerBin};
-        let job_request = serialization::JobRequest {
-            jobs_wanted,
-            results: result_rx.try_iter().collect(),
-        }
-        .serialize_bin();
-
-        let mut delay = std::time::Duration::from_secs(1);
-        let job_response = loop {
-            match ureq::post(&url).send_bytes(&job_request) {
-                Ok(response) => {
-                    let mut buf = Vec::new();
-                    response.into_reader().read_to_end(&mut buf).unwrap();
-                    let response = serialization::JobResponse::deserialize_bin(&buf).unwrap();
-                    break response;
-                }
-                Err(err) => {
-                    eprintln!("\nerror posting results: {err:?}");
-                    eprintln!("retrying in {delay:?}");
-                    std::thread::sleep(delay);
-                    delay *= 2;
-                }
+    std::thread::spawn(move || {
+        let mut jobs_wanted = 1;
+        loop {
+            use nanoserde::{DeBin, SerBin};
+            let job_request = serialization::JobRequest {
+                jobs_wanted,
+                results: result_rx.try_iter().collect(),
             }
-        };
+            .serialize_bin();
 
-        if job_response.jobs.is_empty() {
-            break;
-        } else {
-            work_tx.send(job_response).unwrap();
+            let request_start = std::time::Instant::now();
+            let mut delay = std::time::Duration::from_secs(1);
+            let job_response = loop {
+                match ureq::post(&url).send_bytes(&job_request) {
+                    Ok(response) => {
+                        let mut buf = Vec::new();
+                        response.into_reader().read_to_end(&mut buf).unwrap();
+                        let response = serialization::JobResponse::deserialize_bin(&buf).unwrap();
+                        break response;
+                    }
+                    Err(err) => {
+                        eprintln!("\nerror posting results: {err:?}");
+                        eprintln!("retrying in {delay:?}");
+                        std::thread::sleep(delay);
+                        delay *= 2;
+                    }
+                }
+            };
+            let request_latency = request_start.elapsed();
+
+            if job_response.jobs.is_empty() {
+                break;
+            }
+
+            let received_jobs = job_response.jobs.len();
+
+            let work_start = std::time::Instant::now();
+            let blocked = if let Err(std::sync::mpsc::TrySendError::Full(job_response)) =
+                work_tx.try_send(job_response)
+            {
+                work_tx.send(job_response).unwrap();
+                true
+            } else {
+                false
+            };
+            let work_time = work_start.elapsed();
+
+            print!(
+                "\rserver latency: {:?}, jobs requested: {}, jobs received: {}, work time: {:?}    ",
+                request_latency, jobs_wanted, received_jobs, work_time
+            );
+            use std::io::Write;
+            std::io::stdout().lock().flush().unwrap();
+
+            if work_time < 20 * request_latency || !blocked {
+                jobs_wanted = (jobs_wanted * 4).div_ceil(3);
+            } else {
+                jobs_wanted = (jobs_wanted * 3 / 4).max(1);
+            }
         }
+
+        println!("\nwork finished");
+        std::process::exit(0);
     });
 
     (result_tx, work_rx)
