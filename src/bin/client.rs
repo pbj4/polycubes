@@ -52,6 +52,7 @@ fn spawn_server_connection(
     let (work_tx, work_rx) = mpsc::sync_channel(2);
 
     std::thread::spawn(move || {
+        let agent = ureq::agent();
         let mut jobs_wanted = 1;
         loop {
             let (results, times): (std::collections::HashMap<_, _>, Vec<Duration>) =
@@ -71,7 +72,7 @@ fn spawn_server_connection(
             let request_start = Instant::now();
             let mut delay = Duration::from_secs(1);
             let job_response = loop {
-                match ureq::post(&url).send_bytes(&job_request) {
+                match agent.post(&url).send_bytes(&job_request) {
                     Ok(response) => {
                         let mut buf = Vec::new();
                         response.into_reader().read_to_end(&mut buf).unwrap();

@@ -52,10 +52,18 @@ fn main() {
 
         let job_finder = JobFinder::new(&db);
         let job_tracker = JobTracker::new(&db);
-        print!("\r{job_tracker}");
+        let client_tracker = ClientTracker::new();
+        print!("\r{job_tracker}, {client_tracker}");
         std::io::stdout().lock().flush().unwrap();
 
-        let finish = spawn_job_server(http, (*db).clone(), target_n, job_finder, job_tracker);
+        let finish = spawn_job_server(
+            http,
+            (*db).clone(),
+            target_n,
+            job_finder,
+            job_tracker,
+            client_tracker,
+        );
 
         let mutex = std::sync::Mutex::<()>::default();
         let _guard = finish.wait(mutex.lock().unwrap()).unwrap();
@@ -212,12 +220,41 @@ impl Parameters {
     }
 }
 
+struct ClientTracker {
+    clients: std::collections::HashMap<std::net::SocketAddr, std::time::Instant>,
+}
+
+impl ClientTracker {
+    fn new() -> Self {
+        Self {
+            clients: std::collections::HashMap::new(),
+        }
+    }
+
+    fn seen(&mut self, addr: std::net::SocketAddr) {
+        self.clients.insert(addr, std::time::Instant::now());
+    }
+}
+
+impl std::fmt::Display for ClientTracker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let active_clients = self
+            .clients
+            .values()
+            .filter(|i| i.elapsed() < std::time::Duration::from_secs(60))
+            .count();
+        let total_clients = self.clients.len();
+        write!(f, "active clients: {}/{}", active_clients, total_clients)
+    }
+}
+
 fn spawn_job_server(
     http: Server,
     db: sled::Tree,
     target_n: usize,
     mut job_finder: JobFinder,
     mut job_tracker: JobTracker,
+    mut client_tracker: ClientTracker,
 ) -> std::sync::Arc<std::sync::Condvar> {
     let finish = std::sync::Arc::new(std::sync::Condvar::new());
 
@@ -226,6 +263,8 @@ fn spawn_job_server(
         std::thread::spawn(move || {
             'handle: while let Ok(mut request) = http.recv() {
                 if let ("/work", Method::Post) = (request.url(), request.method()) {
+                    client_tracker.seen(*request.remote_addr().unwrap());
+
                     // handle result
                     let mut job_request = Vec::new();
                     request.as_reader().read_to_end(&mut job_request).unwrap();
@@ -239,7 +278,7 @@ fn spawn_job_server(
 
                         if old.is_empty() {
                             job_tracker.increment();
-                            print!("\r{job_tracker}");
+                            print!("\r{job_tracker}, {client_tracker}");
                             std::io::stdout().lock().flush().unwrap();
                         } else if old != result.as_slice() {
                             eprintln!(
