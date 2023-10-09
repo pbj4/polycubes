@@ -1,7 +1,10 @@
 use {
     nanoserde::{DeBin, SerBin},
     polycubes::serialization::*,
-    std::io::{BufRead, Write},
+    std::{
+        io::{BufRead, Write},
+        time::{Duration, Instant},
+    },
     tiny_http::{Method, Response, Server},
 };
 
@@ -44,7 +47,7 @@ fn main() {
             meta.insert(DB_INIT_KEY, &[]).unwrap();
         }
 
-        let now = std::time::Instant::now();
+        let now = Instant::now();
 
         let http = Server::http(&listen_addr).unwrap();
 
@@ -53,8 +56,7 @@ fn main() {
         let job_finder = JobFinder::new(&db);
         let job_tracker = JobTracker::new(&db);
         let client_tracker = ClientTracker::new();
-        print!("\r{job_tracker}, {client_tracker}");
-        std::io::stdout().lock().flush().unwrap();
+        polycubes::print_overwrite(format!("{job_tracker}, {client_tracker}"));
 
         let finish = spawn_job_server(
             http,
@@ -163,6 +165,7 @@ impl JobFinder {
 struct JobTracker {
     total: usize,
     completed: usize,
+    recent: Vec<(Results, Instant)>,
 }
 
 impl JobTracker {
@@ -174,11 +177,15 @@ impl JobTracker {
                 .map(Result::unwrap)
                 .filter(|(_, v)| !v.is_empty())
                 .count(),
+            recent: Vec::new(),
         }
     }
 
-    fn increment(&mut self) {
+    fn process(&mut self, result: Results) {
         self.completed += 1;
+        self.recent.push((result, Instant::now()));
+        self.recent
+            .retain(|(_, i)| i.elapsed() < Duration::from_secs(60));
     }
 
     fn finished(&self) -> bool {
@@ -188,7 +195,23 @@ impl JobTracker {
 
 impl std::fmt::Display for JobTracker {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "jobs processed: {}/{}", self.completed, self.total)
+        let duration = self
+            .recent
+            .first()
+            .map(|(_, i)| i.elapsed())
+            .unwrap_or(Duration::from_secs(60));
+        let (rs, ps) = self
+            .recent
+            .iter()
+            .map(|(r, _)| r)
+            .cloned()
+            .sum::<Results>()
+            .average_rate(duration);
+        write!(
+            f,
+            "jobs processed: {}/{}, r/s: {}, p/s: {}",
+            self.completed, self.total, rs, ps
+        )
     }
 }
 
@@ -221,7 +244,7 @@ impl Parameters {
 }
 
 struct ClientTracker {
-    clients: std::collections::HashMap<std::net::SocketAddr, std::time::Instant>,
+    clients: std::collections::HashMap<std::net::SocketAddr, Instant>,
 }
 
 impl ClientTracker {
@@ -232,7 +255,7 @@ impl ClientTracker {
     }
 
     fn seen(&mut self, addr: std::net::SocketAddr) {
-        self.clients.insert(addr, std::time::Instant::now());
+        self.clients.insert(addr, Instant::now());
     }
 }
 
@@ -241,7 +264,7 @@ impl std::fmt::Display for ClientTracker {
         let active_clients = self
             .clients
             .values()
-            .filter(|i| i.elapsed() < std::time::Duration::from_secs(60))
+            .filter(|i| i.elapsed() < Duration::from_secs(60))
             .count();
         let total_clients = self.clients.len();
         write!(f, "active clients: {}/{}", active_clients, total_clients)
@@ -277,9 +300,8 @@ fn spawn_job_server(
                             .unwrap();
 
                         if old.is_empty() {
-                            job_tracker.increment();
-                            print!("\r{job_tracker}, {client_tracker}");
-                            std::io::stdout().lock().flush().unwrap();
+                            job_tracker.process(result.de());
+                            polycubes::print_overwrite(format!("{job_tracker}, {client_tracker}"));
                         } else if old != result.as_slice() {
                             eprintln!(
                                 "conflicting result from {:?} for {:?}, {:?} vs {:?}",

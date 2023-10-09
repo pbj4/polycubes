@@ -3,7 +3,7 @@ use nanoserde::{DeBin, SerBin};
 #[derive(SerBin, DeBin, PartialEq, Eq, Hash)]
 pub struct SerPolycube(Vec<u8>);
 
-#[derive(SerBin, DeBin)]
+#[derive(SerBin, DeBin, Clone)]
 pub struct Results {
     counts: Vec<(usize, usize)>,
 }

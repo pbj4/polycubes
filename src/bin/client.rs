@@ -54,6 +54,7 @@ fn spawn_server_connection(
     std::thread::spawn(move || {
         let agent = ureq::agent();
         let mut jobs_wanted = 1;
+        let mut jobs_completed = 0;
         loop {
             let (results, times): (std::collections::HashMap<_, _>, Vec<Duration>) =
                 result_rx.try_iter().unzip();
@@ -62,6 +63,7 @@ fn spawn_server_connection(
                 .map(SerResults::de)
                 .sum::<Results>()
                 .average_rate(times.into_iter().sum::<Duration>());
+            jobs_completed += results.len();
 
             let job_request = JobRequest {
                 jobs_wanted,
@@ -106,12 +108,10 @@ fn spawn_server_connection(
             };
             let work_time = work_start.elapsed();
 
-            print!(
-                "\rserver latency: {:?}, jobs requested: {}, jobs received: {}, work time: {:?}, r/s: {}, p/s: {}    ",
-                request_latency, jobs_wanted, received_jobs, work_time, rs, ps
-            );
-            use std::io::Write;
-            std::io::stdout().lock().flush().unwrap();
+            polycubes::print_overwrite(format!(
+                "server latency: {:?}, jobs received last: {}, total jobs completed: {}, work time: {:?}, r/s: {}, p/s: {}",
+                request_latency, received_jobs, jobs_completed, work_time, rs, ps
+            ));
 
             if work_time < 20 * request_latency || !blocked {
                 jobs_wanted = (jobs_wanted * 4).div_ceil(3);
