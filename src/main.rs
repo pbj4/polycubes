@@ -21,22 +21,16 @@ fn main_inner() {
             .unwrap();
     }
 
-    let now = std::time::Instant::now();
-
     println!("enumerating up to n = {n}...");
 
+    let now = std::time::Instant::now();
     let map = polycubes::revisions::latest::solve(n);
-
     let time = now.elapsed();
 
     println!("total time: {:?}", time);
 
-    let r: usize = map.values().map(|(r, _)| r).sum();
-    let p: usize = map.values().map(|(_, p)| p).sum();
+    let results = polycubes::serialization::Results::from_map(map);
+    let (rs, ps) = results.average_rate(time);
 
-    println!(
-        "performance: {} r/s, {} p/s",
-        (r as f64 / time.as_secs_f64()) as usize,
-        (p as f64 / time.as_secs_f64()) as usize,
-    );
+    println!("performance: {} r/s, {} p/s", rs, ps);
 }

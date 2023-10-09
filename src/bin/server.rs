@@ -1,6 +1,6 @@
 use {
     nanoserde::{DeBin, SerBin},
-    polycubes::serialization,
+    polycubes::serialization::*,
     std::io::{BufRead, Write},
     tiny_http::{Method, Response, Server},
 };
@@ -30,8 +30,7 @@ fn main() {
             println!("generating initial polycubes");
 
             polycubes::revisions::latest::solve_out(initial_n, &|view| {
-                db.insert(serialization::SerPolycube::ser(view).as_slice(), &[])
-                    .unwrap();
+                db.insert(SerPolycube::ser(view).as_slice(), &[]).unwrap();
             });
             db.flush().unwrap();
 
@@ -54,45 +53,28 @@ fn main() {
         let mutex = std::sync::Mutex::<()>::default();
         let _guard = finish.wait(mutex.lock().unwrap()).unwrap();
 
-        let counts = db
+        let results: Results = db
             .iter()
             .map(Result::unwrap)
-            .fold(vec![(0, 0); target_n], |mut a, (_, c)| {
-                let c = serialization::SerResults::from_slice(&c).de().into_vec();
-                assert_eq!(a.len(), c.len());
+            .map(|(_, v)| SerResults::from_slice(&v).de())
+            .sum();
 
-                for ((ar, ap), (cr, cp)) in a.iter_mut().zip(c) {
-                    *ar += cr;
-                    *ap += cp;
-                }
-
-                a
-            });
-
-        meta.insert(
-            DB_FINISH_KEY,
-            serialization::Results::from_vec(counts)
-                .ser()
-                .serialize_bin(),
-        )
-        .unwrap();
+        meta.insert(DB_FINISH_KEY, results.ser().serialize_bin())
+            .unwrap();
         meta.flush().unwrap();
 
-        println!();
-        println!("finish time: {:?}", now.elapsed())
+        println!("\nfinish time: {:?}", now.elapsed())
     }
 
     println!("results:");
 
-    let counts =
-        serialization::SerResults::deserialize_bin(&meta.get(DB_FINISH_KEY).unwrap().unwrap())
-            .unwrap()
-            .de()
-            .into_vec();
+    let results = SerResults::deserialize_bin(&meta.get(DB_FINISH_KEY).unwrap().unwrap())
+        .unwrap()
+        .de();
 
     let (initial_n, _) = get_config_db(&meta).unwrap();
 
-    for (i, (r, p)) in counts.iter().enumerate() {
+    for (i, (r, p)) in results.counts_slice().iter().enumerate() {
         let i = i + 1;
         if i >= initial_n {
             println!("n: {:?}, r: {:?}, p: {:?}", i, r, p);
@@ -234,8 +216,7 @@ fn spawn_job_server(
                     // handle result
                     let mut job_request = Vec::new();
                     request.as_reader().read_to_end(&mut job_request).unwrap();
-                    let job_request =
-                        serialization::JobRequest::deserialize_bin(&job_request).unwrap();
+                    let job_request = JobRequest::deserialize_bin(&job_request).unwrap();
 
                     for (polycube, result) in job_request.results {
                         let old = db
@@ -261,12 +242,12 @@ fn spawn_job_server(
                     }
 
                     // assign job
-                    let job_response = serialization::JobResponse {
+                    let job_response = JobResponse {
                         target_n,
                         jobs: job_finder
                             .assign(job_request.jobs_wanted)
                             .into_iter()
-                            .map(|iv| serialization::SerPolycube::from_slice(&iv))
+                            .map(|iv| SerPolycube::from_slice(&iv))
                             .collect(),
                     };
 

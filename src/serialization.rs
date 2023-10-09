@@ -96,17 +96,49 @@ impl Results {
         SerResults(self.serialize_bin())
     }
 
-    pub fn from_map(map: &std::collections::BTreeMap<usize, (usize, usize)>) -> Self {
+    pub fn from_map(map: std::collections::BTreeMap<usize, (usize, usize)>) -> Self {
         Self {
-            counts: map.values().copied().collect(),
+            counts: map.into_values().collect(),
         }
     }
 
-    pub fn from_vec(counts: Vec<(usize, usize)>) -> Self {
-        Self { counts }
+    pub fn counts_slice(&self) -> &[(usize, usize)] {
+        &self.counts
     }
 
-    pub fn into_vec(self) -> Vec<(usize, usize)> {
-        self.counts
+    pub fn average_rate(&self, duration: std::time::Duration) -> (usize, usize) {
+        let (r, p) = self
+            .counts
+            .iter()
+            .copied()
+            .fold((0, 0), |(ar, ap), (br, bp)| (ar + br, ap + bp));
+
+        (
+            (r as f64 / duration.as_secs_f64()) as usize,
+            (p as f64 / duration.as_secs_f64()) as usize,
+        )
+    }
+}
+
+impl std::ops::AddAssign for Results {
+    fn add_assign(&mut self, rhs: Self) {
+        assert_eq!(self.counts.len(), rhs.counts.len());
+        for ((ar, ap), (br, bp)) in self.counts.iter_mut().zip(rhs.counts) {
+            *ar += br;
+            *ap += bp;
+        }
+    }
+}
+
+impl std::iter::Sum for Results {
+    fn sum<I: Iterator<Item = Self>>(mut iter: I) -> Self {
+        if let Some(init) = iter.next() {
+            iter.fold(init, |mut a, b| {
+                a += b;
+                a
+            })
+        } else {
+            Self { counts: vec![] }
+        }
     }
 }

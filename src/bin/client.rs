@@ -1,4 +1,11 @@
-use {polycubes::serialization, std::sync::mpsc};
+use {
+    nanoserde::{DeBin, SerBin},
+    polycubes::serialization::*,
+    std::{
+        sync::mpsc,
+        time::{Duration, Instant},
+    },
+};
 
 fn main() {
     let mut args = pico_args::Arguments::from_env();
@@ -20,23 +27,26 @@ fn main() {
 
     while let Ok(work) = work_rx.recv() {
         for polycube in work.jobs {
+            let now = Instant::now();
             let map =
                 polycubes::revisions::latest::solve_partial(work.target_n, polycube.de().view());
+            let elasped = now.elapsed();
 
-            let result = serialization::Results::from_map(&map);
+            let result = Results::from_map(map);
 
-            if result_tx.send((polycube, result.ser())).is_err() {
+            if result_tx.send(((polycube, result.ser()), elasped)).is_err() {
                 break;
             }
         }
     }
 }
 
+#[allow(clippy::type_complexity)]
 fn spawn_server_connection(
     url: String,
 ) -> (
-    mpsc::Sender<(serialization::SerPolycube, serialization::SerResults)>,
-    mpsc::Receiver<serialization::JobResponse>,
+    mpsc::Sender<((SerPolycube, SerResults), Duration)>,
+    mpsc::Receiver<JobResponse>,
 ) {
     let (result_tx, result_rx) = mpsc::channel();
     let (work_tx, work_rx) = mpsc::sync_channel(2);
@@ -44,21 +54,28 @@ fn spawn_server_connection(
     std::thread::spawn(move || {
         let mut jobs_wanted = 1;
         loop {
-            use nanoserde::{DeBin, SerBin};
-            let job_request = serialization::JobRequest {
+            let (results, times): (std::collections::HashMap<_, _>, Vec<Duration>) =
+                result_rx.try_iter().unzip();
+            let (rs, ps) = results
+                .values()
+                .map(SerResults::de)
+                .sum::<Results>()
+                .average_rate(times.into_iter().sum::<Duration>());
+
+            let job_request = JobRequest {
                 jobs_wanted,
-                results: result_rx.try_iter().collect(),
+                results,
             }
             .serialize_bin();
 
-            let request_start = std::time::Instant::now();
-            let mut delay = std::time::Duration::from_secs(1);
+            let request_start = Instant::now();
+            let mut delay = Duration::from_secs(1);
             let job_response = loop {
                 match ureq::post(&url).send_bytes(&job_request) {
                     Ok(response) => {
                         let mut buf = Vec::new();
                         response.into_reader().read_to_end(&mut buf).unwrap();
-                        let response = serialization::JobResponse::deserialize_bin(&buf).unwrap();
+                        let response = JobResponse::deserialize_bin(&buf).unwrap();
                         break response;
                     }
                     Err(err) => {
@@ -77,7 +94,7 @@ fn spawn_server_connection(
 
             let received_jobs = job_response.jobs.len();
 
-            let work_start = std::time::Instant::now();
+            let work_start = Instant::now();
             let blocked = if let Err(std::sync::mpsc::TrySendError::Full(job_response)) =
                 work_tx.try_send(job_response)
             {
@@ -89,8 +106,8 @@ fn spawn_server_connection(
             let work_time = work_start.elapsed();
 
             print!(
-                "\rserver latency: {:?}, jobs requested: {}, jobs received: {}, work time: {:?}    ",
-                request_latency, jobs_wanted, received_jobs, work_time
+                "\rserver latency: {:?}, jobs requested: {}, jobs received: {}, work time: {:?}, r/s: {}, p/s: {}    ",
+                request_latency, jobs_wanted, received_jobs, work_time, rs, ps
             );
             use std::io::Write;
             std::io::stdout().lock().flush().unwrap();
