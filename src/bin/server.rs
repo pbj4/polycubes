@@ -3,7 +3,7 @@ use {
     polycubes::serialization::*,
     std::{
         io::{BufRead, Write},
-        time::{Duration, Instant},
+        time::{Duration, Instant, SystemTime},
     },
     tiny_http::{Method, Response, Server},
 };
@@ -19,19 +19,20 @@ fn main() {
         let listen_addr: String = args.free_from_str().expect("Error parsing listen address");
 
         print!("loading configuration from ");
-        let Parameters {
+        let StartData {
             initial_n,
             target_n,
-        } = Parameters::from_db(&meta)
-            .map(|params| {
+            ..
+        } = StartData::from_db(&meta)
+            .map(|start_data| {
                 print!("db: ");
-                params
+                start_data
             })
             .unwrap_or_else(|| {
                 print!("cli: ");
-                let params = Parameters::from_cli(&mut args);
-                params.set_db(&meta);
-                params
+                let start_data = StartData::from_cli(&mut args);
+                start_data.set_db(&meta);
+                start_data
             });
 
         println!("initial_n = {initial_n}, target_n = {target_n}");
@@ -46,8 +47,6 @@ fn main() {
 
             meta.insert(DB_INIT_KEY, &[]).unwrap();
         }
-
-        let now = Instant::now();
 
         let http = Server::http(&listen_addr).unwrap();
 
@@ -76,24 +75,28 @@ fn main() {
             .map(|(_, v)| SerResults::from_slice(&v).de())
             .sum();
 
-        meta.insert(DB_FINISH_KEY, results.ser().serialize_bin())
-            .unwrap();
+        meta.insert(
+            DB_FINISH_KEY,
+            FinishData::from_results(results).serialize_bin(),
+        )
+        .unwrap();
         meta.flush().unwrap();
 
-        println!("\nfinish time: {:?}", now.elapsed())
+        println!();
     }
+
+    let start_data = StartData::from_db(&meta).unwrap();
+
+    let finish_data =
+        FinishData::deserialize_bin(&meta.get(DB_FINISH_KEY).unwrap().unwrap()).unwrap();
+
+    println!("total time: {:?}", finish_data.elasped_time(&start_data));
 
     println!("results:");
 
-    let results = SerResults::deserialize_bin(&meta.get(DB_FINISH_KEY).unwrap().unwrap())
-        .unwrap()
-        .de();
-
-    let Parameters { initial_n, .. } = Parameters::from_db(&meta).unwrap();
-
-    for (i, (r, p)) in results.counts_slice().iter().enumerate() {
+    for (i, (r, p)) in finish_data.results.counts_slice().iter().enumerate() {
         let i = i + 1;
-        if i >= initial_n {
+        if i >= start_data.initial_n {
             println!("n: {:?}, r: {:?}, p: {:?}", i, r, p);
         }
     }
@@ -106,10 +109,9 @@ fn main() {
         .unwrap();
 }
 
+const DB_START_KEY: &str = "db_start";
 const DB_INIT_KEY: &str = "db_init";
 const DB_FINISH_KEY: &str = "db_finish";
-const DB_PARAMETERS_KEY: &str = "db_parameters";
-
 struct JobFinder {
     db: sled::Tree,
     iter: Option<sled::Iter>,
@@ -216,16 +218,17 @@ impl std::fmt::Display for JobTracker {
 }
 
 #[derive(nanoserde::SerBin, nanoserde::DeBin)]
-struct Parameters {
+struct StartData {
     initial_n: usize,
     target_n: usize,
+    start_time: u128,
 }
 
-impl Parameters {
+impl StartData {
     fn from_db(meta: &sled::Tree) -> Option<Self> {
-        meta.get(DB_PARAMETERS_KEY)
+        meta.get(DB_START_KEY)
             .unwrap()
-            .map(|param| Self::deserialize_bin(&param).unwrap())
+            .map(|start_data| Self::deserialize_bin(&start_data).unwrap())
     }
 
     fn from_cli(args: &mut pico_args::Arguments) -> Self {
@@ -234,12 +237,37 @@ impl Parameters {
         Self {
             initial_n,
             target_n,
+            start_time: SystemTime::UNIX_EPOCH.elapsed().unwrap().as_millis(),
         }
     }
 
     fn set_db(&self, meta: &sled::Tree) {
-        meta.insert(DB_PARAMETERS_KEY, self.serialize_bin())
-            .unwrap();
+        meta.insert(DB_START_KEY, self.serialize_bin()).unwrap();
+    }
+}
+
+#[derive(SerBin, DeBin)]
+struct FinishData {
+    results: Results,
+    stop_time: u128,
+}
+
+impl FinishData {
+    fn from_results(results: Results) -> Self {
+        Self {
+            results,
+            stop_time: SystemTime::UNIX_EPOCH.elapsed().unwrap().as_millis(),
+        }
+    }
+
+    fn elasped_time(&self, start_data: &StartData) -> Duration {
+        Duration::from_millis(
+            self.stop_time
+                .checked_sub(start_data.start_time)
+                .unwrap()
+                .try_into()
+                .unwrap(),
+        )
     }
 }
 
