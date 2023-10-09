@@ -16,13 +16,20 @@ fn main() {
         let listen_addr: String = args.free_from_str().expect("Error parsing listen address");
 
         print!("loading configuration from ");
-        let (initial_n, target_n) = if let Some(config) = get_config_db(&meta) {
-            print!("db: ");
-            config
-        } else {
-            print!("cli: ");
-            get_config_cli(&mut args, &meta)
-        };
+        let Parameters {
+            initial_n,
+            target_n,
+        } = Parameters::from_db(&meta)
+            .map(|params| {
+                print!("db: ");
+                params
+            })
+            .unwrap_or_else(|| {
+                print!("cli: ");
+                let params = Parameters::from_cli(&mut args);
+                params.set_db(&meta);
+                params
+            });
 
         println!("initial_n = {initial_n}, target_n = {target_n}");
 
@@ -72,7 +79,7 @@ fn main() {
         .unwrap()
         .de();
 
-    let (initial_n, _) = get_config_db(&meta).unwrap();
+    let Parameters { initial_n, .. } = Parameters::from_db(&meta).unwrap();
 
     for (i, (r, p)) in results.counts_slice().iter().enumerate() {
         let i = i + 1;
@@ -91,8 +98,7 @@ fn main() {
 
 const DB_INIT_KEY: &str = "db_init";
 const DB_FINISH_KEY: &str = "db_finish";
-const DB_INITIAL_N_KEY: &str = "db_initial_n";
-const DB_TARGET_N_KEY: &str = "db_target_n";
+const DB_PARAMETERS_KEY: &str = "db_parameters";
 
 struct JobFinder {
     db: sled::Tree,
@@ -178,25 +184,32 @@ impl std::fmt::Display for JobTracker {
     }
 }
 
-fn get_config_db(meta: &sled::Tree) -> Option<(usize, usize)> {
-    if let (Some(initial_n), Some(target_n)) = (
-        meta.get(DB_INITIAL_N_KEY).unwrap(),
-        meta.get(DB_TARGET_N_KEY).unwrap(),
-    ) {
-        let [initial_n]: [u8; 1] = initial_n.as_ref().try_into().unwrap();
-        let [target_n]: [u8; 1] = target_n.as_ref().try_into().unwrap();
-        Some((initial_n.into(), target_n.into()))
-    } else {
-        None
-    }
+#[derive(nanoserde::SerBin, nanoserde::DeBin)]
+struct Parameters {
+    initial_n: usize,
+    target_n: usize,
 }
 
-fn get_config_cli(args: &mut pico_args::Arguments, meta: &sled::Tree) -> (usize, usize) {
-    let initial_n: u8 = args.free_from_str().expect("Error parsing initial_n");
-    let target_n: u8 = args.free_from_str().expect("Error parsing target_n");
-    meta.insert(DB_INITIAL_N_KEY, &[initial_n]).unwrap();
-    meta.insert(DB_TARGET_N_KEY, &[target_n]).unwrap();
-    (initial_n.into(), target_n.into())
+impl Parameters {
+    fn from_db(meta: &sled::Tree) -> Option<Self> {
+        meta.get(DB_PARAMETERS_KEY)
+            .unwrap()
+            .map(|param| Self::deserialize_bin(&param).unwrap())
+    }
+
+    fn from_cli(args: &mut pico_args::Arguments) -> Self {
+        let initial_n = args.free_from_str().expect("Error parsing initial_n");
+        let target_n = args.free_from_str().expect("Error parsing target_n");
+        Self {
+            initial_n,
+            target_n,
+        }
+    }
+
+    fn set_db(&self, meta: &sled::Tree) {
+        meta.insert(DB_PARAMETERS_KEY, self.serialize_bin())
+            .unwrap();
+    }
 }
 
 fn spawn_job_server(
