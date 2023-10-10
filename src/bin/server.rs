@@ -8,6 +8,8 @@ use {
     tiny_http::{Method, Response, Server},
 };
 
+const CLIENT_TIMEOUT: Duration = Duration::from_secs(600);
+
 fn main() {
     println!("opening database");
 
@@ -55,7 +57,8 @@ fn main() {
         let job_finder = JobFinder::new(&db);
         let job_tracker = JobTracker::new(&db);
         let client_tracker = ClientTracker::new();
-        polycubes::print_overwrite(format!("{job_tracker}, {client_tracker}"));
+        let mut overwriter = polycubes::Overwriter::default();
+        overwriter.print(format!("{job_tracker}, {client_tracker}"));
 
         let finish = spawn_job_server(
             http,
@@ -64,6 +67,7 @@ fn main() {
             job_finder,
             job_tracker,
             client_tracker,
+            overwriter,
         );
 
         let mutex = std::sync::Mutex::<()>::default();
@@ -105,6 +109,7 @@ fn main() {
 const DB_START_KEY: &str = "db_start";
 const DB_INIT_KEY: &str = "db_init";
 const DB_FINISH_KEY: &str = "db_finish";
+
 struct JobFinder {
     db: sled::Tree,
     iter: Option<sled::Iter>,
@@ -179,8 +184,7 @@ impl JobTracker {
     fn process(&mut self, result: Results) {
         self.completed += 1;
         self.recent.push((result, Instant::now()));
-        self.recent
-            .retain(|(_, i)| i.elapsed() < Duration::from_secs(60));
+        self.recent.retain(|(_, i)| i.elapsed() < CLIENT_TIMEOUT);
     }
 
     fn finished(&self) -> bool {
@@ -194,7 +198,7 @@ impl std::fmt::Display for JobTracker {
             .recent
             .first()
             .map(|(_, i)| i.elapsed())
-            .unwrap_or(Duration::from_secs(60));
+            .unwrap_or(CLIENT_TIMEOUT);
         let (rs, ps) = self
             .recent
             .iter()
@@ -265,7 +269,7 @@ impl FinishData {
 }
 
 struct ClientTracker {
-    clients: std::collections::HashMap<std::net::SocketAddr, Instant>,
+    clients: std::collections::HashMap<std::net::IpAddr, Instant>,
 }
 
 impl ClientTracker {
@@ -275,7 +279,7 @@ impl ClientTracker {
         }
     }
 
-    fn seen(&mut self, addr: std::net::SocketAddr) {
+    fn seen(&mut self, addr: std::net::IpAddr) {
         self.clients.insert(addr, Instant::now());
     }
 }
@@ -285,7 +289,7 @@ impl std::fmt::Display for ClientTracker {
         let active_clients = self
             .clients
             .values()
-            .filter(|i| i.elapsed() < Duration::from_secs(60))
+            .filter(|i| i.elapsed() < CLIENT_TIMEOUT)
             .count();
         let total_clients = self.clients.len();
         write!(f, "active clients: {}/{}", active_clients, total_clients)
@@ -299,6 +303,7 @@ fn spawn_job_server(
     mut job_finder: JobFinder,
     mut job_tracker: JobTracker,
     mut client_tracker: ClientTracker,
+    mut overwriter: polycubes::Overwriter,
 ) -> std::sync::Arc<std::sync::Condvar> {
     let finish = std::sync::Arc::new(std::sync::Condvar::new());
 
@@ -307,7 +312,7 @@ fn spawn_job_server(
         std::thread::spawn(move || {
             'handle: while let Ok(mut request) = http.recv() {
                 if let ("/work", Method::Post) = (request.url(), request.method()) {
-                    client_tracker.seen(*request.remote_addr().unwrap());
+                    client_tracker.seen(request.remote_addr().unwrap().ip());
 
                     // handle result
                     let mut job_request = Vec::new();
@@ -322,7 +327,7 @@ fn spawn_job_server(
 
                         if old.is_empty() {
                             job_tracker.process(result.de());
-                            polycubes::print_overwrite(format!("{job_tracker}, {client_tracker}"));
+                            overwriter.print(format!("{job_tracker}, {client_tracker}"));
                         } else if old != result.as_slice() {
                             eprintln!(
                                 "conflicting result from {:?} for {:?}, {:?} vs {:?}",

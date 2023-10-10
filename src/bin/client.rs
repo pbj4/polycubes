@@ -52,7 +52,10 @@ fn spawn_server_connection(
     let (work_tx, work_rx) = mpsc::sync_channel(2);
 
     std::thread::spawn(move || {
-        let agent = ureq::agent();
+        let agent = ureq::AgentBuilder::new()
+            .timeout(std::time::Duration::from_secs(1))
+            .build();
+        let mut overwriter = polycubes::Overwriter::default();
         let mut jobs_wanted = 1;
         let mut jobs_completed = 0;
         loop {
@@ -108,8 +111,8 @@ fn spawn_server_connection(
             };
             let work_time = work_start.elapsed();
 
-            polycubes::print_overwrite(format!(
-                "server latency: {:?}, jobs received last: {}, total jobs completed: {}, work time: {:?}, r/s: {}, p/s: {}",
+            overwriter.print(format!(
+                "server latency: {:?}, current jobs: {}, total jobs: {}, work time: {:?}, r/s: {}, p/s: {}",
                 request_latency, received_jobs, jobs_completed, work_time, rs, ps
             ));
 

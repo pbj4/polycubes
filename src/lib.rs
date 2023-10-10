@@ -1,14 +1,21 @@
 pub mod revisions;
 pub mod serialization;
 
-pub fn print_overwrite(str: String) {
-    use std::io::Write;
+#[derive(Default)]
+pub struct Overwriter {
+    last_len: usize,
+}
 
-    print!("\r");
-    for _ in 0..str.len() + 1 {
-        print!(" ");
+impl Overwriter {
+    pub fn print(&mut self, str: String) {
+        use std::io::Write;
+        print!("\r");
+        for _ in 0..self.last_len {
+            print!(" ");
+        }
+        std::io::stdout().flush().unwrap();
+        print!("\r{str}");
+        std::io::stdout().flush().unwrap();
+        self.last_len = str.len();
     }
-    std::io::stdout().flush().unwrap();
-    print!("\r{str}");
-    std::io::stdout().flush().unwrap();
 }
