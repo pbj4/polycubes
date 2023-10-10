@@ -6,6 +6,7 @@ pub struct SerPolycube(Vec<u8>);
 #[derive(SerBin, DeBin, Clone)]
 pub struct Results {
     counts: Vec<(usize, usize)>,
+    offset: usize,
 }
 
 #[derive(SerBin, DeBin)]
@@ -97,13 +98,18 @@ impl Results {
     }
 
     pub fn from_map(map: std::collections::BTreeMap<usize, (usize, usize)>) -> Self {
-        Self {
-            counts: map.into_values().collect(),
-        }
-    }
+        let offset = map
+            .iter()
+            .find_map(|(k, v)| (*v != (0, 0)).then_some(*k))
+            .unwrap();
 
-    pub fn counts_slice(&self) -> &[(usize, usize)] {
-        &self.counts
+        Self {
+            counts: map
+                .into_iter()
+                .filter_map(|(k, v)| (k >= offset).then_some(v))
+                .collect(),
+            offset,
+        }
     }
 
     pub fn average_rate(&self, duration: std::time::Duration) -> (usize, usize) {
@@ -120,9 +126,25 @@ impl Results {
     }
 }
 
+impl std::fmt::Display for Results {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (i, (r, p)) in self.counts.iter().enumerate() {
+            if i != 0 {
+                writeln!(f)?;
+            }
+
+            let n = i + self.offset;
+            write!(f, "n: {:?}, r: {:?}, p: {:?}", n, r, p)?;
+        }
+        Ok(())
+    }
+}
+
 impl std::ops::AddAssign for Results {
     fn add_assign(&mut self, rhs: Self) {
+        assert_eq!(self.offset, rhs.offset);
         assert_eq!(self.counts.len(), rhs.counts.len());
+
         for ((ar, ap), (br, bp)) in self.counts.iter_mut().zip(rhs.counts) {
             *ar += br;
             *ap += bp;
@@ -138,7 +160,10 @@ impl std::iter::Sum for Results {
                 a
             })
         } else {
-            Self { counts: vec![] }
+            Self {
+                counts: vec![],
+                offset: 0,
+            }
         }
     }
 }

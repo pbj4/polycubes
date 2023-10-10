@@ -92,14 +92,7 @@ fn main() {
 
     println!("total time: {:?}", finish_data.elasped_time(&start_data));
 
-    println!("results:");
-
-    for (i, (r, p)) in finish_data.results.counts_slice().iter().enumerate() {
-        let i = i + 1;
-        if i >= start_data.initial_n {
-            println!("n: {:?}, r: {:?}, p: {:?}", i, r, p);
-        }
-    }
+    println!("results:\n{}", finish_data.results);
 
     print!("press enter to exit...");
     std::io::stdout().lock().flush().unwrap();
