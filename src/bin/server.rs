@@ -318,6 +318,7 @@ fn spawn_job_server(
                     let mut job_request = Vec::new();
                     request.as_reader().read_to_end(&mut job_request).unwrap();
                     let job_request = JobRequest::deserialize_bin(&job_request).unwrap();
+                    let mut total_results: Option<Results> = None;
 
                     for (polycube, result) in job_request.results {
                         let old = db
@@ -326,8 +327,11 @@ fn spawn_job_server(
                             .unwrap();
 
                         if old.is_empty() {
-                            job_tracker.process(result.de());
-                            overwriter.print(format!("{job_tracker}, {client_tracker}"));
+                            if let Some(total_results) = total_results.as_mut() {
+                                *total_results += result.de();
+                            } else {
+                                total_results = Some(result.de());
+                            }
                         } else if old != result.as_slice() {
                             eprintln!(
                                 "conflicting result from {:?} for {:?}, {:?} vs {:?}",
@@ -340,6 +344,11 @@ fn spawn_job_server(
                             continue 'handle;
                         }
                     }
+
+                    if let Some(total_results) = total_results {
+                        job_tracker.process(total_results);
+                    }
+                    overwriter.print(format!("{job_tracker}, {client_tracker}"));
 
                     // assign job
                     let job_response = JobResponse {

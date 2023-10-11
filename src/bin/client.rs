@@ -53,19 +53,22 @@ fn spawn_server_connection(
 
     std::thread::spawn(move || {
         let agent = ureq::AgentBuilder::new()
-            .timeout(std::time::Duration::from_secs(1))
+            .timeout(std::time::Duration::from_secs(5))
             .build();
         let mut overwriter = polycubes::Overwriter::default();
         let mut jobs_wanted = 1;
         let mut jobs_completed = 0;
+        let (mut rs, mut ps) = (0, 0);
         loop {
             let (results, times): (std::collections::HashMap<_, _>, Vec<Duration>) =
                 result_rx.try_iter().unzip();
-            let (rs, ps) = results
-                .values()
-                .map(SerResults::de)
-                .sum::<Results>()
-                .average_rate(times.into_iter().sum::<Duration>());
+            if !results.is_empty() {
+                (rs, ps) = results
+                    .values()
+                    .map(SerResults::de)
+                    .sum::<Results>()
+                    .average_rate(times.into_iter().sum::<Duration>());
+            }
             jobs_completed += results.len();
 
             let job_request = JobRequest {
