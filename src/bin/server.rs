@@ -11,7 +11,7 @@ use {
 const CLIENT_TIMEOUT: Duration = Duration::from_secs(600);
 
 fn main() {
-    println!("opening database");
+    println!("opening database...");
 
     let db = sled::open("serverdb").unwrap();
     let meta = db.open_tree("meta").unwrap();
@@ -21,11 +21,7 @@ fn main() {
         let listen_addr: String = args.free_from_str().expect("Error parsing listen address");
 
         print!("loading configuration from ");
-        let StartData {
-            initial_n,
-            target_n,
-            ..
-        } = StartData::from_db(&meta)
+        let start_data = StartData::from_db(&meta)
             .map(|start_data| {
                 print!("db: ");
                 start_data
@@ -37,12 +33,15 @@ fn main() {
                 start_data
             });
 
-        println!("initial_n = {initial_n}, target_n = {target_n}");
+        println!(
+            "initial_n = {}, target_n = {}",
+            start_data.initial_n, start_data.target_n
+        );
 
         if !meta.contains_key(DB_INIT_KEY).unwrap() {
-            println!("generating initial polycubes");
+            println!("generating initial polycubes...");
 
-            polycubes::revisions::latest::solve_out(initial_n, &|view| {
+            polycubes::revisions::latest::solve_out(start_data.initial_n, &|view| {
                 db.insert(SerPolycube::ser(view).as_slice(), &[]).unwrap();
             });
             db.flush().unwrap();
@@ -54,16 +53,25 @@ fn main() {
 
         println!("listening on http://{listen_addr}/ for job requests...");
 
+        let format_status =
+            move |job_tracker: &JobTracker, client_tracker: &ClientTracker| -> String {
+                format!(
+                    "time elapsed: {:?}, {job_tracker}, {client_tracker}",
+                    start_data.start_time().elapsed().unwrap()
+                )
+            };
+
         let job_finder = JobFinder::new(&db);
         let job_tracker = JobTracker::new(&db);
         let client_tracker = ClientTracker::new();
         let mut overwriter = polycubes::Overwriter::default();
-        overwriter.print(format!("{job_tracker}, {client_tracker}"));
+        overwriter.print(format_status(&job_tracker, &client_tracker));
 
         let finish = spawn_job_server(
             http,
             (*db).clone(),
-            target_n,
+            start_data,
+            format_status,
             job_finder,
             job_tracker,
             client_tracker,
@@ -94,7 +102,13 @@ fn main() {
     let finish_data =
         FinishData::deserialize_bin(&meta.get(DB_FINISH_KEY).unwrap().unwrap()).unwrap();
 
-    println!("total time: {:?}", finish_data.elasped_time(&start_data));
+    println!(
+        "total time elapsed: {:?}",
+        finish_data
+            .stop_time()
+            .duration_since(start_data.start_time())
+            .unwrap()
+    );
 
     println!("results:\n{}", finish_data.results);
 
@@ -208,13 +222,13 @@ impl std::fmt::Display for JobTracker {
             .average_rate(duration);
         write!(
             f,
-            "jobs processed: {}/{}, r/s: {}, p/s: {}",
+            "jobs done: {}/{}, r/s: {}, p/s: {}",
             self.completed, self.total, rs, ps
         )
     }
 }
 
-#[derive(nanoserde::SerBin, nanoserde::DeBin)]
+#[derive(SerBin, DeBin, Clone, Copy)]
 struct StartData {
     initial_n: usize,
     target_n: usize,
@@ -241,6 +255,10 @@ impl StartData {
     fn set_db(&self, meta: &sled::Tree) {
         meta.insert(DB_START_KEY, self.serialize_bin()).unwrap();
     }
+
+    fn start_time(&self) -> SystemTime {
+        SystemTime::UNIX_EPOCH + Duration::from_millis(self.start_time.try_into().unwrap())
+    }
 }
 
 #[derive(SerBin, DeBin)]
@@ -257,14 +275,8 @@ impl FinishData {
         }
     }
 
-    fn elasped_time(&self, start_data: &StartData) -> Duration {
-        Duration::from_millis(
-            self.stop_time
-                .checked_sub(start_data.start_time)
-                .unwrap()
-                .try_into()
-                .unwrap(),
-        )
+    fn stop_time(&self) -> SystemTime {
+        SystemTime::UNIX_EPOCH + Duration::from_millis(self.stop_time.try_into().unwrap())
     }
 }
 
@@ -281,25 +293,22 @@ impl ClientTracker {
 
     fn seen(&mut self, addr: std::net::IpAddr) {
         self.clients.insert(addr, Instant::now());
+        self.clients.retain(|_, i| i.elapsed() < CLIENT_TIMEOUT);
     }
 }
 
 impl std::fmt::Display for ClientTracker {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let active_clients = self
-            .clients
-            .values()
-            .filter(|i| i.elapsed() < CLIENT_TIMEOUT)
-            .count();
-        let total_clients = self.clients.len();
-        write!(f, "active clients: {}/{}", active_clients, total_clients)
+        write!(f, "active clients: {}", self.clients.len())
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_job_server(
     http: Server,
     db: sled::Tree,
-    target_n: usize,
+    start_data: StartData,
+    format_status: impl Fn(&JobTracker, &ClientTracker) -> String + Send + 'static,
     mut job_finder: JobFinder,
     mut job_tracker: JobTracker,
     mut client_tracker: ClientTracker,
@@ -348,11 +357,11 @@ fn spawn_job_server(
                     if let Some(total_results) = total_results {
                         job_tracker.process(total_results);
                     }
-                    overwriter.print(format!("{job_tracker}, {client_tracker}"));
+                    overwriter.print(format_status(&job_tracker, &client_tracker));
 
                     // assign job
                     let job_response = JobResponse {
-                        target_n,
+                        target_n: start_data.target_n,
                         jobs: job_finder
                             .assign(job_request.jobs_wanted)
                             .into_iter()
