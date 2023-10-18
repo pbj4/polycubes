@@ -52,9 +52,6 @@ fn spawn_server_connection(
     let (work_tx, work_rx) = mpsc::sync_channel(2);
 
     std::thread::spawn(move || {
-        let agent = ureq::AgentBuilder::new()
-            .timeout(std::time::Duration::from_secs(5))
-            .build();
         let mut overwriter = polycubes::Overwriter::default();
         let mut jobs_wanted = 1;
         let mut jobs_completed = 0;
@@ -80,11 +77,10 @@ fn spawn_server_connection(
             let request_start = Instant::now();
             let mut delay = Duration::from_secs(1);
             let job_response = loop {
-                match agent.post(&url).send_bytes(&job_request) {
+                match attohttpc::post(&url).bytes(&job_request).send() {
                     Ok(response) => {
-                        let mut buf = Vec::new();
-                        response.into_reader().read_to_end(&mut buf).unwrap();
-                        let response = JobResponse::deserialize_bin(&buf).unwrap();
+                        let response =
+                            JobResponse::deserialize_bin(&response.bytes().unwrap()).unwrap();
                         break response;
                     }
                     Err(err) => {
