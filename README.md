@@ -66,14 +66,10 @@ Tested on a Ryzen 7 4600U
 
 * ```thread_local! { static RefCell<Collection> }``` to easily reuse allocations on each thread
 
-## Possible improvements
+## Values found with the distributed system (src/bin/)
 
-* Using a faster deduplication algorithm (<9%)
+* n = 18 4d rotation: `1758309223457`
 
-* Removing more allocations (<9%)
+* n = 19 3d rotation: `27144143923583`
 
-* Caching indexes of cubes that can be added to avoid converting from bit representation (<5%)
-
-* Implementing this other [streaming algorithm](https://arxiv.org/pdf/1202.0319.pdf) that claims to be more efficient when adding nodes OR keep results of current streaming algorithm to use on next polycube (<5%)
-
-* Parallelizing across multiple machines
+* n = 19 4d rotation: `13573319825615`
