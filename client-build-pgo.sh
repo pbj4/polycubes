@@ -1,7 +1,9 @@
 #!/bin/bash
 set -e
 
-tmpdir=$(mktemp -d)
+tmpdir="$(pwd)/target/pgo-data/"
+rm -rf "$tmpdir"
+mkdir -p "$tmpdir"
 target=$(rustc -vV | sed -n 's|host: ||p')
 EXTRA_RUSTFLAGS="--C target-cpu=native --C opt-level=3 --C lto=yes --C embed-bitcode=y --C codegen-units=1 --C code-model=small --C debuginfo=0"
 
@@ -18,11 +20,10 @@ echo "Gathering profiles..."
 
 function test(){
     rm -rf serverdb
-    ./target/release/server 127.0.0.1:48479 1 $1 &
-    local serverpid="$!"
-    sleep 1
+    echo "" | ./target/release/server 127.0.0.1:48479 1 $1 &
+    sleep 0.1
     ./target/$target/release/client http://127.0.0.1:48479/
-    kill $serverpid
+    sleep 0.1
 }
 
 test 10
@@ -34,9 +35,6 @@ echo "Merging profiles..."
 
 echo "Building optimized client..."
 RUSTFLAGS="-Cprofile-use=$tmpdir/merged.profdata $EXTRA_RUSTFLAGS" cargo build --release --target=$target --bin client --features client
-
-echo "Removing temporary directory..."
-rm -rf "$tmpdir"
 
 echo "Finished"
 echo "Run optimized client with \`./target/$target/release/client\`"

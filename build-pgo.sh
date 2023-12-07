@@ -1,7 +1,9 @@
 #!/bin/bash
 set -e
 
-tmpdir=$(mktemp -d)
+tmpdir="$(pwd)/target/pgo-data/"
+rm -rf "$tmpdir"
+mkdir -p "$tmpdir"
 target=$(rustc -vV | sed -n 's|host: ||p')
 EXTRA_RUSTFLAGS="--C target-cpu=native --C opt-level=3 --C lto=yes --C embed-bitcode=y --C codegen-units=1 --C code-model=small --C debuginfo=0"
 
@@ -21,9 +23,6 @@ echo "Merging profiles..."
 
 echo "Building optimized binary..."
 RUSTFLAGS="-Cprofile-use=$tmpdir/merged.profdata $EXTRA_RUSTFLAGS" cargo build --release --target=$target
-
-echo "Removing temporary directory..."
-rm -rf "$tmpdir"
 
 echo "Finished"
 echo "Run optimized binary with \`./target/$target/release/polycubes\`"
