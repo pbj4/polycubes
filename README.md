@@ -94,4 +94,4 @@ Then run the build script for the main binary or the client:
 
 This has only been tested on linux on x86_64. On my machine, I get a ~15% performance boost compared to building normally, but your mileage may vary
 
-For windows, see #1
+For windows, see this [issue](https://github.com/pbj4/polycubes/issues/1)
