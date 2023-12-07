@@ -73,3 +73,25 @@ Tested on a Ryzen 7 4600U
 * n = 19 3d rotation: `27144143923583`
 
 * n = 19 4d rotation: `13573319825615`
+
+## Compiling with Profile Guided Optimization (thanks @HakMe2Deth)
+
+First, install ```llvm-profdata``` through rustup:
+
+```
+rustup component add llvm-tools-preview
+```
+
+Then run the build script for the main binary or the client:
+
+```
+./build-pgo.sh
+```
+
+```
+./client-build-pgo.sh
+```
+
+This has only been tested on linux on x86_64. On my machine, I get a ~15% performance boost compared to building normally, but your mileage may vary
+
+For windows, see #1
